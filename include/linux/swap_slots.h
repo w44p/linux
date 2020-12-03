@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_SWAP_SLOTS_H
 #define _LINUX_SWAP_SLOTS_H
 
@@ -22,7 +23,7 @@ struct swap_slots_cache {
 
 void disable_swap_slots_cache_lock(void);
 void reenable_swap_slots_cache_unlock(void);
-int enable_swap_slots_cache(void);
+void enable_swap_slots_cache(void);
 int free_swap_slot(swp_entry_t entry);
 
 extern bool swap_slot_cache_enabled;

@@ -1,9 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __TOOLS_LINUX_KERNEL_H
 #define __TOOLS_LINUX_KERNEL_H
 
 #include <stdarg.h>
 #include <stddef.h>
 #include <assert.h>
+#include <linux/build_bug.h>
 #include <linux/compiler.h>
 #include <endian.h>
 #include <byteswap.h>
@@ -33,9 +35,6 @@
 	const typeof(((type *)0)->member) * __mptr = (ptr);	\
 	(type *)((char *)__mptr - offsetof(type, member)); })
 #endif
-
-#define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
-#define BUILD_BUG_ON_ZERO(e) (sizeof(struct { int:-!!(e); }))
 
 #ifndef max
 #define max(x, y) ({				\
@@ -69,6 +68,7 @@
 #define BUG_ON(cond) assert(!(cond))
 #endif
 #endif
+#define BUG()	BUG_ON(1)
 
 #if __BYTE_ORDER == __BIG_ENDIAN
 #define cpu_to_le16 bswap_16
@@ -100,6 +100,7 @@
 
 int vscnprintf(char *buf, size_t size, const char *fmt, va_list args);
 int scnprintf(char * buf, size_t size, const char * fmt, ...);
+int scnprintf_pad(char * buf, size_t size, const char * fmt, ...);
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]) + __must_be_array(arr))
 
@@ -114,6 +115,6 @@ int scnprintf(char * buf, size_t size, const char * fmt, ...);
 #define round_down(x, y) ((x) & ~__round_mask(x, y))
 
 #define current_gfp_context(k) 0
-#define synchronize_sched()
+#define synchronize_rcu()
 
 #endif

@@ -1,5 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASMS390_SET_MEMORY_H
 #define _ASMS390_SET_MEMORY_H
+
+#include <linux/mutex.h>
+
+extern struct mutex cpa_mutex;
 
 #define SET_MEMORY_RO	1UL
 #define SET_MEMORY_RW	2UL

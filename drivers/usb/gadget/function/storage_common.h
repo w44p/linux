@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef USB_STORAGE_COMMON_H
 #define USB_STORAGE_COMMON_H
 
@@ -170,11 +171,6 @@ enum data_direction {
 	DATA_DIR_TO_HOST,
 	DATA_DIR_NONE
 };
-
-static inline u32 get_unaligned_be24(u8 *buf)
-{
-	return 0xffffff & (u32) get_unaligned_be32(buf - 1);
-}
 
 static inline struct fsg_lun *fsg_lun_from_dev(struct device *dev)
 {

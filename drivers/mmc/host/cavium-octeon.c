@@ -148,7 +148,6 @@ static int octeon_mmc_probe(struct platform_device *pdev)
 {
 	struct device_node *cn, *node = pdev->dev.of_node;
 	struct cvm_mmc_host *host;
-	struct resource	*res;
 	void __iomem *base;
 	int mmc_irq[9];
 	int i, ret = 0;
@@ -205,26 +204,16 @@ static int octeon_mmc_probe(struct platform_device *pdev)
 
 	host->last_slot = -1;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		dev_err(&pdev->dev, "Platform resource[0] is missing\n");
-		return -ENXIO;
-	}
-	base = devm_ioremap_resource(&pdev->dev, res);
+	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
-	host->base = (void __iomem *)base;
+	host->base = base;
 	host->reg_off = 0;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	if (!res) {
-		dev_err(&pdev->dev, "Platform resource[1] is missing\n");
-		return -EINVAL;
-	}
-	base = devm_ioremap_resource(&pdev->dev, res);
+	base = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
-	host->dma_base = (void __iomem *)base;
+	host->dma_base = base;
 	/*
 	 * To keep the register addresses shared we intentionaly use
 	 * a negative offset here, first register used on Octeon therefore
@@ -338,22 +327,12 @@ static struct platform_driver octeon_mmc_driver = {
 	.remove		= octeon_mmc_remove,
 	.driver		= {
 		.name	= KBUILD_MODNAME,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = octeon_mmc_match,
 	},
 };
 
-static int __init octeon_mmc_init(void)
-{
-	return platform_driver_register(&octeon_mmc_driver);
-}
-
-static void __exit octeon_mmc_cleanup(void)
-{
-	platform_driver_unregister(&octeon_mmc_driver);
-}
-
-module_init(octeon_mmc_init);
-module_exit(octeon_mmc_cleanup);
+module_platform_driver(octeon_mmc_driver);
 
 MODULE_AUTHOR("Cavium Inc. <support@cavium.com>");
 MODULE_DESCRIPTION("Low-level driver for Cavium OCTEON MMC/SSD card");

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __PERF_MEM_EVENTS_H
 #define __PERF_MEM_EVENTS_H
 
@@ -5,6 +6,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <linux/types.h>
+#include <linux/refcount.h>
+#include <linux/perf_event.h>
 #include "stat.h"
 
 struct perf_mem_event {
@@ -13,6 +16,13 @@ struct perf_mem_event {
 	const char	*tag;
 	const char	*name;
 	const char	*sysfs_name;
+};
+
+struct mem_info {
+	struct addr_map_symbol	iaddr;
+	struct addr_map_symbol	daddr;
+	union perf_mem_data_src	data_src;
+	refcount_t		refcnt;
 };
 
 enum {
@@ -28,6 +38,8 @@ int perf_mem_events__parse(const char *str);
 int perf_mem_events__init(void);
 
 char *perf_mem_events__name(int i);
+
+void perf_mem_events__list(void);
 
 struct mem_info;
 int perf_mem__tlb_scnprintf(char *out, size_t sz, struct mem_info *mem_info);

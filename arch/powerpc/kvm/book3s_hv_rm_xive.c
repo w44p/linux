@@ -1,7 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/kvm_host.h>
 #include <linux/err.h>
 #include <linux/kernel_stat.h>
+#include <linux/pgtable.h>
 
 #include <asm/kvm_book3s.h>
 #include <asm/kvm_ppc.h>
@@ -10,7 +12,6 @@
 #include <asm/debug.h>
 #include <asm/synch.h>
 #include <asm/cputhreads.h>
-#include <asm/pgtable.h>
 #include <asm/ppc-opcode.h>
 #include <asm/pnv-pci.h>
 #include <asm/opal.h>
@@ -38,7 +39,6 @@ static inline void __iomem *get_tima_phys(void)
 #define __x_tima		get_tima_phys()
 #define __x_eoi_page(xd)	((void __iomem *)((xd)->eoi_page))
 #define __x_trig_page(xd)	((void __iomem *)((xd)->trig_page))
-#define __x_readb	__raw_rm_readb
 #define __x_writeb	__raw_rm_writeb
 #define __x_readw	__raw_rm_readw
 #define __x_readq	__raw_rm_readq

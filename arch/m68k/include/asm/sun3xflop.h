@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* sun3xflop.h: Sun3/80 specific parts of the floppy driver.
  *
  * Derived partially from asm-sparc/floppy.h, which is:
@@ -9,8 +10,8 @@
 #ifndef __ASM_SUN3X_FLOPPY_H
 #define __ASM_SUN3X_FLOPPY_H
 
+#include <linux/pgtable.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
 #include <asm/irq.h>
 #include <asm/sun3x.h>
 

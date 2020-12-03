@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * BIOS32 and PCI BIOS handling.
  */
@@ -301,7 +302,7 @@ static const struct pci_raw_ops *__init pci_find_bios(void)
 	     check <= (union bios32 *) __va(0xffff0);
 	     ++check) {
 		long sig;
-		if (probe_kernel_address(&check->fields.signature, sig))
+		if (get_kernel_nofault(sig, &check->fields.signature))
 			continue;
 
 		if (check->fields.signature != BIOS32_SIGNATURE)

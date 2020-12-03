@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NET_DN_FIB_H
 #define _NET_DN_FIB_H
 
@@ -89,7 +90,7 @@ struct dn_fib_table {
 	int (*flush)(struct dn_fib_table *t);
 	int (*dump)(struct dn_fib_table *t, struct sk_buff *skb, struct netlink_callback *cb);
 
-	unsigned char data[0];
+	unsigned char data[];
 };
 
 #ifdef CONFIG_DECNET_ROUTER

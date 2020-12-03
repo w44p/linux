@@ -1,8 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * QLogic iSCSI HBA Driver
  * Copyright (c)  2003-2013 QLogic Corporation
- *
- * See LICENSE.qla4xxx for copyright and licensing details.
  */
 
 #ifndef __QL4_DEF_H
@@ -167,6 +166,8 @@
 
 #define DEV_DB_NON_PERSISTENT	0
 #define DEV_DB_PERSISTENT	1
+
+#define QL4_ISP_REG_DISCONNECT 0xffffffffU
 
 #define COPY_ISID(dst_isid, src_isid) {			\
 	int i, j;					\

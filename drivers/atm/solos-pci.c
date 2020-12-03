@@ -1,8 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for the Solos PCI ADSL2+ card, designed to support Linux by
- *  Traverse Technologies -- http://www.traverse.com.au/
+ *  Traverse Technologies -- https://www.traverse.com.au/
  *  Xrio Limited          -- http://www.xrio.com/
- *
  *
  * Copyright © 2008 Traverse Technologies
  * Copyright © 2008 Intel Corporation
@@ -10,15 +10,6 @@
  * Authors: Nathan Williams <nathan@traverse.com.au>
  *          David Woodhouse <dwmw2@infradead.org>
  *          Treker Chen <treker@xrio.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #define DEBUG
@@ -525,9 +516,8 @@ struct geos_gpio_attr {
 static ssize_t geos_gpio_store(struct device *dev, struct device_attribute *attr,
 			       const char *buf, size_t count)
 {
-	struct pci_dev *pdev = to_pci_dev(dev);
 	struct geos_gpio_attr *gattr = container_of(attr, struct geos_gpio_attr, attr);
-	struct solos_card *card = pci_get_drvdata(pdev);
+	struct solos_card *card = dev_get_drvdata(dev);
 	uint32_t data32;
 
 	if (count != 1 && (count != 2 || buf[1] != '\n'))
@@ -551,9 +541,8 @@ static ssize_t geos_gpio_store(struct device *dev, struct device_attribute *attr
 static ssize_t geos_gpio_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
-	struct pci_dev *pdev = to_pci_dev(dev);
 	struct geos_gpio_attr *gattr = container_of(attr, struct geos_gpio_attr, attr);
-	struct solos_card *card = pci_get_drvdata(pdev);
+	struct solos_card *card = dev_get_drvdata(dev);
 	uint32_t data32;
 
 	data32 = ioread32(card->config_regs + GPIO_STATUS);
@@ -565,9 +554,8 @@ static ssize_t geos_gpio_show(struct device *dev, struct device_attribute *attr,
 static ssize_t hardware_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
-	struct pci_dev *pdev = to_pci_dev(dev);
 	struct geos_gpio_attr *gattr = container_of(attr, struct geos_gpio_attr, attr);
-	struct solos_card *card = pci_get_drvdata(pdev);
+	struct solos_card *card = dev_get_drvdata(dev);
 	uint32_t data32;
 
 	data32 = ioread32(card->config_regs + GPIO_STATUS);
@@ -611,7 +599,7 @@ static struct attribute *solos_attrs[] = {
 	NULL
 };
 
-static struct attribute_group solos_attr_group = {
+static const struct attribute_group solos_attr_group = {
 	.attrs = solos_attrs,
 	.name = "parameters",
 };
@@ -628,7 +616,7 @@ static struct attribute *gpio_attrs[] = {
 	NULL
 };
 
-static struct attribute_group gpio_attr_group = {
+static const struct attribute_group gpio_attr_group = {
 	.attrs = gpio_attrs,
 	.name = "gpio",
 };
@@ -1187,12 +1175,10 @@ static int psend(struct atm_vcc *vcc, struct sk_buff *skb)
 	return 0;
 }
 
-static struct atmdev_ops fpga_ops = {
+static const struct atmdev_ops fpga_ops = {
 	.open =		popen,
 	.close =	pclose,
 	.ioctl =	NULL,
-	.getsockopt =	NULL,
-	.setsockopt =	NULL,
 	.send =		psend,
 	.send_oam =	NULL,
 	.phy_put =	NULL,
@@ -1291,7 +1277,8 @@ static int fpga_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		card->using_dma = 1;
 		if (1) { /* All known FPGA versions so far */
 			card->dma_alignment = 3;
-			card->dma_bounce = kmalloc(card->nr_ports * BUF_SIZE, GFP_KERNEL);
+			card->dma_bounce = kmalloc_array(card->nr_ports,
+							 BUF_SIZE, GFP_KERNEL);
 			if (!card->dma_bounce) {
 				dev_warn(&card->dev->dev, "Failed to allocate DMA bounce buffers\n");
 				err = -ENOMEM;
@@ -1476,7 +1463,7 @@ static void fpga_remove(struct pci_dev *dev)
 	kfree(card);
 }
 
-static struct pci_device_id fpga_pci_tbl[] = {
+static const struct pci_device_id fpga_pci_tbl[] = {
 	{ 0x10ee, 0x0300, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
 	{ 0, }
 };

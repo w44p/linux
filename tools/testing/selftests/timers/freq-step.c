@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This test checks the response of the system clock to frequency
  * steps made with adjtimex(). The frequency error and stability of
@@ -6,15 +7,6 @@
  * values from the second interval exceed specified limits.
  *
  * Copyright (C) Miroslav Lichvar <mlichvar@redhat.com>  2017
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
  */
 
 #include <math.h>
@@ -29,9 +21,13 @@
 #define SAMPLE_READINGS 10
 #define MEAN_SAMPLE_INTERVAL 0.1
 #define STEP_INTERVAL 1.0
-#define MAX_PRECISION 100e-9
-#define MAX_FREQ_ERROR 10e-6
-#define MAX_STDDEV 1000e-9
+#define MAX_PRECISION 500e-9
+#define MAX_FREQ_ERROR 0.02e-6
+#define MAX_STDDEV 50e-9
+
+#ifndef ADJ_SETOFFSET
+  #define ADJ_SETOFFSET 0x0100
+#endif
 
 struct sample {
 	double offset;
@@ -229,10 +225,9 @@ static void init_test(void)
 	printf("CLOCK_MONOTONIC_RAW+CLOCK_MONOTONIC precision: %.0f ns\t\t",
 	       1e9 * precision);
 
-	if (precision > MAX_PRECISION) {
-		printf("[SKIP]\n");
-		ksft_exit_skip();
-	}
+	if (precision > MAX_PRECISION)
+		ksft_exit_skip("precision: %.0f ns > MAX_PRECISION: %.0f ns\n",
+				1e9 * precision, 1e9 * MAX_PRECISION);
 
 	printf("[OK]\n");
 	srand(ts.tv_sec ^ ts.tv_nsec);
@@ -262,7 +257,7 @@ int main(int argc, char **argv)
 	set_frequency(0.0);
 
 	if (fails)
-		ksft_exit_fail();
+		return ksft_exit_fail();
 
-	ksft_exit_pass();
+	return ksft_exit_pass();
 }

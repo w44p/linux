@@ -19,7 +19,6 @@
 #include <linux/smp.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
-#include <linux/irqchip/mips-gic.h>
 #include <linux/of_irq.h>
 #include <linux/kernel_stat.h>
 #include <linux/kernel.h>
@@ -29,9 +28,9 @@
 #include <asm/i8259.h>
 #include <asm/irq_cpu.h>
 #include <asm/irq_regs.h>
-#include <asm/mips-cm.h>
 #include <asm/mips-boards/malta.h>
 #include <asm/mips-boards/maltaint.h>
+#include <asm/mips-cps.h>
 #include <asm/gt64120.h>
 #include <asm/mips-boards/generic.h>
 #include <asm/mips-boards/msc01_pci.h>
@@ -145,12 +144,6 @@ static irqreturn_t corehi_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static struct irqaction corehi_irqaction = {
-	.handler = corehi_handler,
-	.name = "CoreHi",
-	.flags = IRQF_NO_THREAD,
-};
-
 static msc_irqmap_t msc_irqmap[] __initdata = {
 	{MSC01C_INT_TMR,		MSC01_IRQ_EDGE, 0},
 	{MSC01C_INT_PCI,		MSC01_IRQ_LEVEL, 0},
@@ -215,7 +208,7 @@ void __init arch_init_irq(void)
 					msc_nr_irqs);
 	}
 
-	if (gic_present) {
+	if (mips_gic_present()) {
 		corehi_irq = MIPS_CPU_IRQ_BASE + MIPSCPU_INT_COREHI;
 	} else if (cpu_has_veic) {
 		set_vi_handler(MSC01E_INT_COREHI, corehi_irqdispatch);
@@ -224,5 +217,7 @@ void __init arch_init_irq(void)
 		corehi_irq = MIPS_CPU_IRQ_BASE + MIPSCPU_INT_COREHI;
 	}
 
-	setup_irq(corehi_irq, &corehi_irqaction);
+	if (request_irq(corehi_irq, corehi_handler, IRQF_NO_THREAD, "CoreHi",
+			NULL))
+		pr_err("Failed to request irq %d (CoreHi)\n", corehi_irq);
 }

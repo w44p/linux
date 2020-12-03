@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NET_INET_IPX_H_
 #define _NET_INET_IPX_H_
 /*
@@ -45,11 +46,6 @@ struct ipxhdr {
 
 /* From af_ipx.c */
 extern int sysctl_ipx_pprop_broadcasting;
-
-static __inline__ struct ipxhdr *ipx_hdr(struct sk_buff *skb)
-{
-	return (struct ipxhdr *)skb_transport_header(skb);
-}
 
 struct ipx_interface {
 	/* IPX address */

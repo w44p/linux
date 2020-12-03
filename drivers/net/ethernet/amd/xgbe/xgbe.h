@@ -129,9 +129,12 @@
 #include <net/dcbnl.h>
 #include <linux/completion.h>
 #include <linux/cpumask.h>
+#include <linux/interrupt.h>
+#include <linux/dcache.h>
+#include <linux/ethtool.h>
+#include <linux/list.h>
 
 #define XGBE_DRV_NAME		"amd-xgbe"
-#define XGBE_DRV_VERSION	"1.0.3"
 #define XGBE_DRV_DESC		"AMD 10 Gigabit Ethernet Driver"
 
 /* Descriptor related defines */
@@ -139,6 +142,11 @@
 #define XGBE_TX_DESC_MIN_FREE	(XGBE_TX_DESC_CNT >> 3)
 #define XGBE_TX_DESC_MAX_PROC	(XGBE_TX_DESC_CNT >> 1)
 #define XGBE_RX_DESC_CNT	512
+
+#define XGBE_TX_DESC_CNT_MIN	64
+#define XGBE_TX_DESC_CNT_MAX	4096
+#define XGBE_RX_DESC_CNT_MIN	64
+#define XGBE_RX_DESC_CNT_MAX	4096
 
 #define XGBE_TX_MAX_BUF_SIZE	(0x3fff & ~(64 - 1))
 
@@ -179,8 +187,6 @@
 /* DMA channel interrupt modes */
 #define XGBE_IRQ_MODE_EDGE	0
 #define XGBE_IRQ_MODE_LEVEL	1
-
-#define XGBE_DMA_INTERRUPT_MASK	0x31c7
 
 #define XGMAC_MIN_PACKET	60
 #define XGMAC_STD_PACKET_MTU	1500
@@ -295,6 +301,48 @@
 
 /* MDIO port types */
 #define XGMAC_MAX_C22_PORT		3
+
+/* Link mode bit operations */
+#define XGBE_ZERO_SUP(_ls)		\
+	ethtool_link_ksettings_zero_link_mode((_ls), supported)
+
+#define XGBE_SET_SUP(_ls, _mode)	\
+	ethtool_link_ksettings_add_link_mode((_ls), supported, _mode)
+
+#define XGBE_CLR_SUP(_ls, _mode)	\
+	ethtool_link_ksettings_del_link_mode((_ls), supported, _mode)
+
+#define XGBE_IS_SUP(_ls, _mode)	\
+	ethtool_link_ksettings_test_link_mode((_ls), supported, _mode)
+
+#define XGBE_ZERO_ADV(_ls)		\
+	ethtool_link_ksettings_zero_link_mode((_ls), advertising)
+
+#define XGBE_SET_ADV(_ls, _mode)	\
+	ethtool_link_ksettings_add_link_mode((_ls), advertising, _mode)
+
+#define XGBE_CLR_ADV(_ls, _mode)	\
+	ethtool_link_ksettings_del_link_mode((_ls), advertising, _mode)
+
+#define XGBE_ADV(_ls, _mode)		\
+	ethtool_link_ksettings_test_link_mode((_ls), advertising, _mode)
+
+#define XGBE_ZERO_LP_ADV(_ls)		\
+	ethtool_link_ksettings_zero_link_mode((_ls), lp_advertising)
+
+#define XGBE_SET_LP_ADV(_ls, _mode)	\
+	ethtool_link_ksettings_add_link_mode((_ls), lp_advertising, _mode)
+
+#define XGBE_CLR_LP_ADV(_ls, _mode)	\
+	ethtool_link_ksettings_del_link_mode((_ls), lp_advertising, _mode)
+
+#define XGBE_LP_ADV(_ls, _mode)		\
+	ethtool_link_ksettings_test_link_mode((_ls), lp_advertising, _mode)
+
+#define XGBE_LM_COPY(_dst, _dname, _src, _sname)	\
+	bitmap_copy((_dst)->link_modes._dname,		\
+		    (_src)->link_modes._sname,		\
+		    __ETHTOOL_LINK_MODE_MASK_NBITS)
 
 struct xgbe_prv_data;
 
@@ -460,6 +508,8 @@ struct xgbe_channel {
 	/* Netdev related settings */
 	struct napi_struct napi;
 
+	/* Per channel interrupt enablement tracker */
+	unsigned int curr_ier;
 	unsigned int saved_ier;
 
 	unsigned int tx_timer_active;
@@ -561,9 +611,7 @@ enum xgbe_mdio_mode {
 };
 
 struct xgbe_phy {
-	u32 supported;
-	u32 advertising;
-	u32 lp_advertising;
+	struct ethtool_link_ksettings lks;
 
 	int address;
 
@@ -666,6 +714,16 @@ struct xgbe_ext_stats {
 	u64 tx_tso_packets;
 	u64 rx_split_header_packets;
 	u64 rx_buffer_unavailable;
+
+	u64 txq_packets[XGBE_MAX_DMA_CHANNELS];
+	u64 txq_bytes[XGBE_MAX_DMA_CHANNELS];
+	u64 rxq_packets[XGBE_MAX_DMA_CHANNELS];
+	u64 rxq_bytes[XGBE_MAX_DMA_CHANNELS];
+
+	u64 tx_vxlan_packets;
+	u64 rx_vxlan_packets;
+	u64 rx_csum_errors;
+	u64 rx_vxlan_csum_errors;
 };
 
 struct xgbe_hw_if {
@@ -769,12 +827,19 @@ struct xgbe_hw_if {
 	/* For ECC */
 	void (*disable_ecc_ded)(struct xgbe_prv_data *);
 	void (*disable_ecc_sec)(struct xgbe_prv_data *, enum xgbe_ecc_sec);
+
+	/* For VXLAN */
+	void (*enable_vxlan)(struct xgbe_prv_data *);
+	void (*disable_vxlan)(struct xgbe_prv_data *);
+	void (*set_vxlan_id)(struct xgbe_prv_data *);
 };
 
 /* This structure represents implementation specific routines for an
  * implementation of a PHY. All routines are required unless noted below.
  *   Optional routines:
+ *     an_pre, an_post
  *     kr_training_pre, kr_training_post
+ *     module_info, module_eeprom
  */
 struct xgbe_phy_impl_if {
 	/* Perform Setup/teardown actions */
@@ -810,14 +875,25 @@ struct xgbe_phy_impl_if {
 	int (*an_config)(struct xgbe_prv_data *);
 
 	/* Set/override auto-negotiation advertisement settings */
-	unsigned int (*an_advertising)(struct xgbe_prv_data *);
+	void (*an_advertising)(struct xgbe_prv_data *,
+			       struct ethtool_link_ksettings *);
 
 	/* Process results of auto-negotiation */
 	enum xgbe_mode (*an_outcome)(struct xgbe_prv_data *);
 
+	/* Pre/Post auto-negotiation support */
+	void (*an_pre)(struct xgbe_prv_data *);
+	void (*an_post)(struct xgbe_prv_data *);
+
 	/* Pre/Post KR training enablement support */
 	void (*kr_training_pre)(struct xgbe_prv_data *);
 	void (*kr_training_post)(struct xgbe_prv_data *);
+
+	/* SFP module related info */
+	int (*module_info)(struct xgbe_prv_data *pdata,
+			   struct ethtool_modinfo *modinfo);
+	int (*module_eeprom)(struct xgbe_prv_data *pdata,
+			     struct ethtool_eeprom *eeprom, u8 *data);
 };
 
 struct xgbe_phy_if {
@@ -839,6 +915,12 @@ struct xgbe_phy_if {
 
 	/* For single interrupt support */
 	irqreturn_t (*an_isr)(struct xgbe_prv_data *);
+
+	/* For ethtool PHY support */
+	int (*module_info)(struct xgbe_prv_data *pdata,
+			   struct ethtool_modinfo *modinfo);
+	int (*module_eeprom)(struct xgbe_prv_data *pdata,
+			     struct ethtool_eeprom *eeprom, u8 *data);
 
 	/* PHY implementation specific services */
 	struct xgbe_phy_impl_if phy_impl;
@@ -892,6 +974,7 @@ struct xgbe_hw_features {
 	unsigned int addn_mac;		/* Additional MAC Addresses */
 	unsigned int ts_src;		/* Timestamp Source */
 	unsigned int sa_vlan_ins;	/* Source Address or VLAN Insertion */
+	unsigned int vxn;		/* VXLAN/NVGRE */
 
 	/* HW Feature Register1 */
 	unsigned int rx_fifo_size;	/* MTL Receive FIFO Size */
@@ -928,6 +1011,7 @@ struct xgbe_version_data {
 	unsigned int irq_reissue_support;
 	unsigned int tx_desc_prefetch;
 	unsigned int rx_desc_prefetch;
+	unsigned int an_cdr_workaround;
 };
 
 struct xgbe_prv_data {
@@ -953,6 +1037,13 @@ struct xgbe_prv_data {
 	void __iomem *sir1_regs;	/* SerDes integration registers (2/2) */
 	void __iomem *xprop_regs;	/* XGBE property registers */
 	void __iomem *xi2c_regs;	/* XGBE I2C CSRs */
+
+	/* Port property registers */
+	unsigned int pp0;
+	unsigned int pp1;
+	unsigned int pp2;
+	unsigned int pp3;
+	unsigned int pp4;
 
 	/* Overall device lock */
 	spinlock_t lock;
@@ -1024,6 +1115,9 @@ struct xgbe_prv_data {
 	unsigned int rx_ring_count;
 	unsigned int rx_desc_count;
 
+	unsigned int new_tx_ring_count;
+	unsigned int new_rx_ring_count;
+
 	unsigned int tx_max_q_count;
 	unsigned int rx_max_q_count;
 	unsigned int tx_q_count;
@@ -1070,6 +1164,9 @@ struct xgbe_prv_data {
 	u8 rss_key[XGBE_RSS_HASH_KEY_SIZE];
 	u32 rss_table[XGBE_RSS_MAX_TABLE_SIZE];
 	u32 rss_options;
+
+	/* VXLAN settings */
+	u16 vxlan_port;
 
 	/* Netdev related settings */
 	unsigned char mac_addr[ETH_ALEN];
@@ -1151,6 +1248,7 @@ struct xgbe_prv_data {
 	enum xgbe_rx kr_state;
 	enum xgbe_rx kx_state;
 	struct work_struct an_work;
+	unsigned int an_again;
 	unsigned int an_supported;
 	unsigned int parallel_detect;
 	unsigned int fec_ability;
@@ -1171,7 +1269,6 @@ struct xgbe_prv_data {
 	struct tasklet_struct tasklet_i2c;
 	struct tasklet_struct tasklet_an;
 
-#ifdef CONFIG_DEBUG_FS
 	struct dentry *xgbe_debugfs;
 
 	unsigned int debugfs_xgmac_reg;
@@ -1182,7 +1279,9 @@ struct xgbe_prv_data {
 	unsigned int debugfs_xprop_reg;
 
 	unsigned int debugfs_xi2c_reg;
-#endif
+
+	bool debugfs_an_cdr_workaround;
+	bool debugfs_an_cdr_track_early;
 };
 
 /* Function prototypes*/
@@ -1210,6 +1309,7 @@ void xgbe_init_function_ptrs_desc(struct xgbe_desc_if *);
 void xgbe_init_function_ptrs_i2c(struct xgbe_i2c_if *);
 const struct net_device_ops *xgbe_get_netdev_ops(void);
 const struct ethtool_ops *xgbe_get_ethtool_ops(void);
+const struct udp_tunnel_nic_info *xgbe_get_udp_tunnel_info(void);
 
 #ifdef CONFIG_AMD_XGBE_DCB
 const struct dcbnl_rtnl_ops *xgbe_get_dcbnl_ops(void);
@@ -1227,13 +1327,17 @@ int xgbe_powerup(struct net_device *, unsigned int);
 int xgbe_powerdown(struct net_device *, unsigned int);
 void xgbe_init_rx_coalesce(struct xgbe_prv_data *);
 void xgbe_init_tx_coalesce(struct xgbe_prv_data *);
+void xgbe_restart_dev(struct xgbe_prv_data *pdata);
+void xgbe_full_restart_dev(struct xgbe_prv_data *pdata);
 
 #ifdef CONFIG_DEBUG_FS
 void xgbe_debugfs_init(struct xgbe_prv_data *);
 void xgbe_debugfs_exit(struct xgbe_prv_data *);
+void xgbe_debugfs_rename(struct xgbe_prv_data *pdata);
 #else
 static inline void xgbe_debugfs_init(struct xgbe_prv_data *pdata) {}
 static inline void xgbe_debugfs_exit(struct xgbe_prv_data *pdata) {}
+static inline void xgbe_debugfs_rename(struct xgbe_prv_data *pdata) {}
 #endif /* CONFIG_DEBUG_FS */
 
 /* NOTE: Uncomment for function trace log messages in KERNEL LOG */

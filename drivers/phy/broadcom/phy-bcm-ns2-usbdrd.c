@@ -12,12 +12,13 @@
  */
 
 #include <linux/delay.h>
-#include <linux/extcon.h>
+#include <linux/extcon-provider.h>
 #include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/irq.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
@@ -87,17 +88,11 @@ static const unsigned int usb_extcon_cable[] = {
 static inline int pll_lock_stat(u32 usb_reg, int reg_mask,
 				struct ns2_phy_driver *driver)
 {
-	int retry = PLL_LOCK_RETRY;
 	u32 val;
 
-	do {
-		udelay(1);
-		val = readl(driver->icfgdrd_regs + usb_reg);
-		if (val & reg_mask)
-			return 0;
-	} while (--retry > 0);
-
-	return -EBUSY;
+	return readl_poll_timeout_atomic(driver->icfgdrd_regs + usb_reg,
+					 val, (val & reg_mask), 1,
+					 PLL_LOCK_RETRY);
 }
 
 static int ns2_drd_phy_init(struct phy *phy)
@@ -253,16 +248,16 @@ static void extcon_work(struct work_struct *work)
 	vbus = gpiod_get_value_cansleep(driver->vbus_gpiod);
 
 	if (!id && vbus) { /* Host connected */
-		extcon_set_cable_state_(driver->edev, EXTCON_USB_HOST, true);
+		extcon_set_state_sync(driver->edev, EXTCON_USB_HOST, true);
 		pr_debug("Host cable connected\n");
 		driver->data->new_state = EVT_HOST;
 		connect_change(driver);
 	} else if (id && !vbus) { /* Disconnected */
-		extcon_set_cable_state_(driver->edev, EXTCON_USB_HOST, false);
-		extcon_set_cable_state_(driver->edev, EXTCON_USB, false);
+		extcon_set_state_sync(driver->edev, EXTCON_USB_HOST, false);
+		extcon_set_state_sync(driver->edev, EXTCON_USB, false);
 		pr_debug("Cable disconnected\n");
 	} else if (id && vbus) { /* Device connected */
-		extcon_set_cable_state_(driver->edev, EXTCON_USB, true);
+		extcon_set_state_sync(driver->edev, EXTCON_USB, true);
 		pr_debug("Device cable connected\n");
 		driver->data->new_state = EVT_DEVICE;
 		connect_change(driver);
@@ -279,7 +274,7 @@ static irqreturn_t gpio_irq_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static struct phy_ops ops = {
+static const struct phy_ops ops = {
 	.init		= ns2_drd_phy_init,
 	.power_on	= ns2_drd_phy_poweron,
 	.power_off	= ns2_drd_phy_poweroff,

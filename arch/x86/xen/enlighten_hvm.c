@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
+
+#include <linux/acpi.h>
 #include <linux/cpu.h>
 #include <linux/kexec.h>
 #include <linux/memblock.h>
@@ -8,10 +11,13 @@
 
 #include <asm/cpu.h>
 #include <asm/smp.h>
+#include <asm/io_apic.h>
 #include <asm/reboot.h>
 #include <asm/setup.h>
+#include <asm/idtentry.h>
 #include <asm/hypervisor.h>
 #include <asm/e820/api.h>
+#include <asm/early_ioremap.h>
 
 #include <asm/xen/cpuid.h>
 #include <asm/xen/hypervisor.h>
@@ -21,36 +27,61 @@
 #include "mmu.h"
 #include "smp.h"
 
-void __ref xen_hvm_init_shared_info(void)
+static unsigned long shared_info_pfn;
+
+void xen_hvm_init_shared_info(void)
 {
 	struct xen_add_to_physmap xatp;
-	u64 pa;
-
-	if (HYPERVISOR_shared_info == &xen_dummy_shared_info) {
-		/*
-		 * Search for a free page starting at 4kB physical address.
-		 * Low memory is preferred to avoid an EPT large page split up
-		 * by the mapping.
-		 * Starting below X86_RESERVE_LOW (usually 64kB) is fine as
-		 * the BIOS used for HVM guests is well behaved and won't
-		 * clobber memory other than the first 4kB.
-		 */
-		for (pa = PAGE_SIZE;
-		     !e820__mapped_all(pa, pa + PAGE_SIZE, E820_TYPE_RAM) ||
-		     memblock_is_reserved(pa);
-		     pa += PAGE_SIZE)
-			;
-
-		memblock_reserve(pa, PAGE_SIZE);
-		HYPERVISOR_shared_info = __va(pa);
-	}
 
 	xatp.domid = DOMID_SELF;
 	xatp.idx = 0;
 	xatp.space = XENMAPSPACE_shared_info;
-	xatp.gpfn = virt_to_pfn(HYPERVISOR_shared_info);
+	xatp.gpfn = shared_info_pfn;
 	if (HYPERVISOR_memory_op(XENMEM_add_to_physmap, &xatp))
 		BUG();
+}
+
+static void __init reserve_shared_info(void)
+{
+	u64 pa;
+
+	/*
+	 * Search for a free page starting at 4kB physical address.
+	 * Low memory is preferred to avoid an EPT large page split up
+	 * by the mapping.
+	 * Starting below X86_RESERVE_LOW (usually 64kB) is fine as
+	 * the BIOS used for HVM guests is well behaved and won't
+	 * clobber memory other than the first 4kB.
+	 */
+	for (pa = PAGE_SIZE;
+	     !e820__mapped_all(pa, pa + PAGE_SIZE, E820_TYPE_RAM) ||
+	     memblock_is_reserved(pa);
+	     pa += PAGE_SIZE)
+		;
+
+	shared_info_pfn = PHYS_PFN(pa);
+
+	memblock_reserve(pa, PAGE_SIZE);
+	HYPERVISOR_shared_info = early_memremap(pa, PAGE_SIZE);
+}
+
+static void __init xen_hvm_init_mem_mapping(void)
+{
+	early_memunmap(HYPERVISOR_shared_info, PAGE_SIZE);
+	HYPERVISOR_shared_info = __va(PFN_PHYS(shared_info_pfn));
+
+	/*
+	 * The virtual address of the shared_info page has changed, so
+	 * the vcpu_info pointer for VCPU 0 is now stale.
+	 *
+	 * The prepare_boot_cpu callback will re-initialize it via
+	 * xen_vcpu_setup, but we can't rely on that to be called for
+	 * old Xen versions (xen_have_vector_callback == 0).
+	 *
+	 * It is, in any case, bad to have a stale vcpu_info pointer
+	 * so reset it now.
+	 */
+	xen_vcpu_info_reset(0);
 }
 
 static void __init init_hvm_pv_info(void)
@@ -87,6 +118,17 @@ static void __init init_hvm_pv_info(void)
 		this_cpu_write(xen_vcpu_id, ebx);
 	else
 		this_cpu_write(xen_vcpu_id, smp_processor_id());
+}
+
+DEFINE_IDTENTRY_SYSVEC(sysvec_xen_hvm_callback)
+{
+	struct pt_regs *old_regs = set_irq_regs(regs);
+
+	inc_irq_stat(irq_hv_callback_count);
+
+	xen_hvm_evtchn_do_upcall();
+
+	set_irq_regs(old_regs);
 }
 
 #ifdef CONFIG_KEXEC_CORE
@@ -153,6 +195,7 @@ static void __init xen_hvm_guest_init(void)
 
 	init_hvm_pv_info();
 
+	reserve_shared_info();
 	xen_hvm_init_shared_info();
 
 	/*
@@ -174,26 +217,24 @@ static void __init xen_hvm_guest_init(void)
 	xen_hvm_init_time_ops();
 	xen_hvm_init_mmu_ops();
 
-	if (xen_pvh_domain())
-		machine_ops.emergency_restart = xen_emergency_restart;
 #ifdef CONFIG_KEXEC_CORE
 	machine_ops.shutdown = xen_hvm_shutdown;
 	machine_ops.crash_shutdown = xen_hvm_crash_shutdown;
 #endif
 }
 
-static bool xen_nopv;
 static __init int xen_parse_nopv(char *arg)
 {
-       xen_nopv = true;
-       return 0;
+	pr_notice("\"xen_nopv\" is deprecated, please use \"nopv\" instead\n");
+
+	if (xen_cpuid_base())
+		nopv = true;
+	return 0;
 }
 early_param("xen_nopv", xen_parse_nopv);
 
-bool xen_hvm_need_lapic(void)
+bool __init xen_hvm_need_lapic(void)
 {
-	if (xen_nopv)
-		return false;
 	if (xen_pv_domain())
 		return false;
 	if (!xen_hvm_domain())
@@ -202,21 +243,69 @@ bool xen_hvm_need_lapic(void)
 		return false;
 	return true;
 }
-EXPORT_SYMBOL_GPL(xen_hvm_need_lapic);
+
+static __init void xen_hvm_guest_late_init(void)
+{
+#ifdef CONFIG_XEN_PVH
+	/* Test for PVH domain (PVH boot path taken overrides ACPI flags). */
+	if (!xen_pvh &&
+	    (x86_platform.legacy.rtc || !x86_platform.legacy.no_vga))
+		return;
+
+	/* PVH detected. */
+	xen_pvh = true;
+
+	if (nopv)
+		panic("\"nopv\" and \"xen_nopv\" parameters are unsupported in PVH guest.");
+
+	/* Make sure we don't fall back to (default) ACPI_IRQ_MODEL_PIC. */
+	if (!nr_ioapics && acpi_irq_model == ACPI_IRQ_MODEL_PIC)
+		acpi_irq_model = ACPI_IRQ_MODEL_PLATFORM;
+
+	machine_ops.emergency_restart = xen_emergency_restart;
+	pv_info.name = "Xen PVH";
+#endif
+}
 
 static uint32_t __init xen_platform_hvm(void)
 {
-	if (xen_pv_domain() || xen_nopv)
+	uint32_t xen_domain = xen_cpuid_base();
+	struct x86_hyper_init *h = &x86_hyper_xen_hvm.init;
+
+	if (xen_pv_domain())
 		return 0;
 
-	return xen_cpuid_base();
+	if (xen_pvh_domain() && nopv) {
+		/* Guest booting via the Xen-PVH boot entry goes here */
+		pr_info("\"nopv\" parameter is ignored in PVH guest\n");
+		nopv = false;
+	} else if (nopv && xen_domain) {
+		/*
+		 * Guest booting via normal boot entry (like via grub2) goes
+		 * here.
+		 *
+		 * Use interface functions for bare hardware if nopv,
+		 * xen_hvm_guest_late_init is an exception as we need to
+		 * detect PVH and panic there.
+		 */
+		h->init_platform = x86_init_noop;
+		h->x2apic_available = bool_x86_init_noop;
+		h->init_mem_mapping = x86_init_noop;
+		h->init_after_bootmem = x86_init_noop;
+		h->guest_late_init = xen_hvm_guest_late_init;
+		x86_hyper_xen_hvm.runtime.pin_vcpu = x86_op_int_noop;
+	}
+	return xen_domain;
 }
 
-const struct hypervisor_x86 x86_hyper_xen_hvm = {
+struct hypervisor_x86 x86_hyper_xen_hvm __initdata = {
 	.name                   = "Xen HVM",
 	.detect                 = xen_platform_hvm,
-	.init_platform          = xen_hvm_guest_init,
-	.pin_vcpu               = xen_pin_vcpu,
-	.x2apic_available       = xen_x2apic_para_available,
+	.type			= X86_HYPER_XEN_HVM,
+	.init.init_platform     = xen_hvm_guest_init,
+	.init.x2apic_available  = xen_x2apic_para_available,
+	.init.init_mem_mapping	= xen_hvm_init_mem_mapping,
+	.init.guest_late_init	= xen_hvm_guest_late_init,
+	.runtime.pin_vcpu       = xen_pin_vcpu,
+	.ignore_nopv            = true,
 };
-EXPORT_SYMBOL(x86_hyper_xen_hvm);

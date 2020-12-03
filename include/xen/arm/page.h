@@ -1,12 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_ARM_XEN_PAGE_H
 #define _ASM_ARM_XEN_PAGE_H
 
 #include <asm/page.h>
-#include <asm/pgtable.h>
 
 #include <linux/pfn.h>
 #include <linux/types.h>
 #include <linux/dma-mapping.h>
+#include <linux/pgtable.h>
 
 #include <xen/xen.h>
 #include <xen/interface/grant_table.h>
@@ -75,23 +76,20 @@ static inline unsigned long bfn_to_pfn(unsigned long bfn)
 #define bfn_to_local_pfn(bfn)	bfn_to_pfn(bfn)
 
 /* VIRT <-> GUEST conversion */
-#define virt_to_gfn(v)		(pfn_to_gfn(virt_to_phys(v) >> XEN_PAGE_SHIFT))
+#define virt_to_gfn(v)                                                         \
+	({                                                                     \
+		WARN_ON_ONCE(!virt_addr_valid(v));                              \
+		pfn_to_gfn(virt_to_phys(v) >> XEN_PAGE_SHIFT);                 \
+	})
 #define gfn_to_virt(m)		(__va(gfn_to_pfn(m) << XEN_PAGE_SHIFT))
+
+#define percpu_to_gfn(v)	\
+	(pfn_to_gfn(per_cpu_ptr_to_phys(v) >> XEN_PAGE_SHIFT))
 
 /* Only used in PV code. But ARM guests are always HVM. */
 static inline xmaddr_t arbitrary_virt_to_machine(void *vaddr)
 {
 	BUG();
-}
-
-/* TODO: this shouldn't be here but it is because the frontend drivers
- * are using it (its rolled in headers) even though we won't hit the code path.
- * So for right now just punt with this.
- */
-static inline pte_t *lookup_address(unsigned long address, unsigned int *level)
-{
-	BUG();
-	return NULL;
 }
 
 extern int set_foreign_p2m_mapping(struct gnttab_map_grant_ref *map_ops,

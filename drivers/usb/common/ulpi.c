@@ -1,13 +1,10 @@
-/**
+// SPDX-License-Identifier: GPL-2.0
+/*
  * ulpi.c - USB ULPI PHY bus
  *
  * Copyright (C) 2015 Intel Corporation
  *
  * Author: Heikki Krogerus <heikki.krogerus@linux.intel.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/ulpi/interface.h>
@@ -135,7 +132,7 @@ static void ulpi_dev_release(struct device *dev)
 	kfree(to_ulpi_dev(dev));
 }
 
-static struct device_type ulpi_dev_type = {
+static const struct device_type ulpi_dev_type = {
 	.name = "ulpi_device",
 	.groups = ulpi_dev_attr_groups,
 	.release = ulpi_dev_release,
@@ -146,6 +143,7 @@ static struct device_type ulpi_dev_type = {
 /**
  * ulpi_register_driver - register a driver with the ULPI bus
  * @drv: driver being registered
+ * @module: ends up being THIS_MODULE
  *
  * Registers a driver with the ULPI bus.
  */
@@ -183,9 +181,9 @@ static int ulpi_of_register(struct ulpi *ulpi)
 	/* Find a ulpi bus underneath the parent or the grandparent */
 	parent = ulpi->dev.parent;
 	if (parent->of_node)
-		np = of_find_node_by_name(parent->of_node, "ulpi");
+		np = of_get_child_by_name(parent->of_node, "ulpi");
 	else if (parent->parent && parent->parent->of_node)
-		np = of_find_node_by_name(parent->parent->of_node, "ulpi");
+		np = of_get_child_by_name(parent->parent->of_node, "ulpi");
 	if (!np)
 		return 0;
 
@@ -293,7 +291,7 @@ EXPORT_SYMBOL_GPL(ulpi_register_interface);
 
 /**
  * ulpi_unregister_interface - unregister ULPI interface
- * @intrf: struct ulpi_interface
+ * @ulpi: struct ulpi_interface
  *
  * Unregisters a ULPI device and it's interface that was created with
  * ulpi_create_interface().

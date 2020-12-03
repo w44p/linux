@@ -1,7 +1,7 @@
 #ifndef _HFI1_VNIC_H
 #define _HFI1_VNIC_H
 /*
- * Copyright(c) 2017 Intel Corporation.
+ * Copyright(c) 2017 - 2020 Intel Corporation.
  *
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
@@ -54,21 +54,6 @@
 #define HFI1_VNIC_MAX_TXQ     16
 #define HFI1_VNIC_MAX_PAD     12
 
-/* L2 header definitions */
-#define HFI1_L2_TYPE_OFFSET     0x7
-#define HFI1_L2_TYPE_SHFT       0x5
-#define HFI1_L2_TYPE_MASK       0x3
-
-#define HFI1_GET_L2_TYPE(hdr)                                            \
-	((*((u8 *)(hdr) + HFI1_L2_TYPE_OFFSET) >> HFI1_L2_TYPE_SHFT) &   \
-	 HFI1_L2_TYPE_MASK)
-
-/* L4 type definitions */
-#define HFI1_L4_TYPE_OFFSET 8
-
-#define HFI1_GET_L4_TYPE(data)   \
-	(*((u8 *)(data) + HFI1_L4_TYPE_OFFSET))
-
 /* L4 header definitions */
 #define HFI1_VNIC_L4_HDR_OFFSET  OPA_VNIC_L2_HDR_LEN
 
@@ -84,6 +69,7 @@
 #define HFI1_VNIC_SC_SHIFT      4
 
 #define HFI1_VNIC_MAX_QUEUE 16
+#define HFI1_NUM_VNIC_CTXT 8
 
 /**
  * struct hfi1_vnic_sdma - VNIC per Tx ring SDMA information
@@ -103,6 +89,7 @@ struct hfi1_vnic_sdma {
 	struct sdma_txreq stx;
 	unsigned int state;
 	u8 q_idx;
+	bool pkts_sent;
 };
 
 /**
@@ -118,7 +105,6 @@ struct hfi1_vnic_rx_queue {
 	struct hfi1_vnic_vport_info *vinfo;
 	struct net_device           *netdev;
 	struct napi_struct           napi;
-	struct sk_buff_head          skbq;
 };
 
 /**
@@ -160,7 +146,6 @@ struct hfi1_vnic_vport_info {
 
 /* vnic hfi1 internal functions */
 void hfi1_vnic_setup(struct hfi1_devdata *dd);
-void hfi1_vnic_cleanup(struct hfi1_devdata *dd);
 int hfi1_vnic_txreq_init(struct hfi1_devdata *dd);
 void hfi1_vnic_txreq_deinit(struct hfi1_devdata *dd);
 

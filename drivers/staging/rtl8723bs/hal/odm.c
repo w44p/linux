@@ -1,32 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2011 Realtek Corporation. All rights reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
  ******************************************************************************/
 
 #include "odm_precomp.h"
-
-static const u16 dB_Invert_Table[8][12] = {
-	{1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 4, 4},
-	{4, 5, 6, 6, 7, 8, 9, 10, 11, 13, 14, 16},
-	{18, 20, 22, 25, 28, 32, 35, 40, 45, 50, 56, 63},
-	{71, 79, 89, 100, 112, 126, 141, 158, 178, 200, 224, 251},
-	{282, 316, 355, 398, 447, 501, 562, 631, 708, 794, 891, 1000},
-	{1122, 1259, 1413, 1585, 1778, 1995, 2239, 2512, 2818, 3162, 3548, 3981},
-	{4467, 5012, 5623, 6310, 7079, 7943, 8913, 10000, 11220, 12589, 14125,
-	 15849},
-	{17783, 19953, 22387, 25119, 28184, 31623, 35481, 39811, 44668, 50119,
-	 56234, 65535}
- };
 
 /*  Global var */
 
@@ -347,12 +326,8 @@ void ODM_TXPowerTrackingCheck(PDM_ODM_T pDM_Odm);
 
 void odm_RateAdaptiveMaskInit(PDM_ODM_T pDM_Odm);
 
-void odm_TXPowerTrackingThermalMeterInit(PDM_ODM_T pDM_Odm);
-
 
 void odm_TXPowerTrackingInit(PDM_ODM_T pDM_Odm);
-
-void odm_TXPowerTrackingCheckCE(PDM_ODM_T pDM_Odm);
 
 /* Remove Edca by Yu Chen */
 
@@ -592,95 +567,95 @@ void ODM_CmnInfoHook(PDM_ODM_T pDM_Odm, ODM_CMNINFO_E CmnInfo, void *pValue)
 	/*  Dynamic call by reference pointer. */
 	/*  */
 	case ODM_CMNINFO_MAC_PHY_MODE:
-		pDM_Odm->pMacPhyMode = (u8 *)pValue;
+		pDM_Odm->pMacPhyMode = pValue;
 		break;
 
 	case ODM_CMNINFO_TX_UNI:
-		pDM_Odm->pNumTxBytesUnicast = (u64 *)pValue;
+		pDM_Odm->pNumTxBytesUnicast = pValue;
 		break;
 
 	case ODM_CMNINFO_RX_UNI:
-		pDM_Odm->pNumRxBytesUnicast = (u64 *)pValue;
+		pDM_Odm->pNumRxBytesUnicast = pValue;
 		break;
 
 	case ODM_CMNINFO_WM_MODE:
-		pDM_Odm->pwirelessmode = (u8 *)pValue;
+		pDM_Odm->pwirelessmode = pValue;
 		break;
 
 	case ODM_CMNINFO_BAND:
-		pDM_Odm->pBandType = (u8 *)pValue;
+		pDM_Odm->pBandType = pValue;
 		break;
 
 	case ODM_CMNINFO_SEC_CHNL_OFFSET:
-		pDM_Odm->pSecChOffset = (u8 *)pValue;
+		pDM_Odm->pSecChOffset = pValue;
 		break;
 
 	case ODM_CMNINFO_SEC_MODE:
-		pDM_Odm->pSecurity = (u8 *)pValue;
+		pDM_Odm->pSecurity = pValue;
 		break;
 
 	case ODM_CMNINFO_BW:
-		pDM_Odm->pBandWidth = (u8 *)pValue;
+		pDM_Odm->pBandWidth = pValue;
 		break;
 
 	case ODM_CMNINFO_CHNL:
-		pDM_Odm->pChannel = (u8 *)pValue;
+		pDM_Odm->pChannel = pValue;
 		break;
 
 	case ODM_CMNINFO_DMSP_GET_VALUE:
-		pDM_Odm->pbGetValueFromOtherMac = (bool *)pValue;
+		pDM_Odm->pbGetValueFromOtherMac = pValue;
 		break;
 
 	case ODM_CMNINFO_BUDDY_ADAPTOR:
-		pDM_Odm->pBuddyAdapter = (struct adapter **)pValue;
+		pDM_Odm->pBuddyAdapter = pValue;
 		break;
 
 	case ODM_CMNINFO_DMSP_IS_MASTER:
-		pDM_Odm->pbMasterOfDMSP = (bool *)pValue;
+		pDM_Odm->pbMasterOfDMSP = pValue;
 		break;
 
 	case ODM_CMNINFO_SCAN:
-		pDM_Odm->pbScanInProcess = (bool *)pValue;
+		pDM_Odm->pbScanInProcess = pValue;
 		break;
 
 	case ODM_CMNINFO_POWER_SAVING:
-		pDM_Odm->pbPowerSaving = (bool *)pValue;
+		pDM_Odm->pbPowerSaving = pValue;
 		break;
 
 	case ODM_CMNINFO_ONE_PATH_CCA:
-		pDM_Odm->pOnePathCCA = (u8 *)pValue;
+		pDM_Odm->pOnePathCCA = pValue;
 		break;
 
 	case ODM_CMNINFO_DRV_STOP:
-		pDM_Odm->pbDriverStopped =  (bool *)pValue;
+		pDM_Odm->pbDriverStopped =  pValue;
 		break;
 
 	case ODM_CMNINFO_PNP_IN:
-		pDM_Odm->pbDriverIsGoingToPnpSetPowerSleep =  (bool *)pValue;
+		pDM_Odm->pbDriverIsGoingToPnpSetPowerSleep =  pValue;
 		break;
 
 	case ODM_CMNINFO_INIT_ON:
-		pDM_Odm->pinit_adpt_in_progress =  (bool *)pValue;
+		pDM_Odm->pinit_adpt_in_progress =  pValue;
 		break;
 
 	case ODM_CMNINFO_ANT_TEST:
-		pDM_Odm->pAntennaTest =  (u8 *)pValue;
+		pDM_Odm->pAntennaTest =  pValue;
 		break;
 
 	case ODM_CMNINFO_NET_CLOSED:
-		pDM_Odm->pbNet_closed = (bool *)pValue;
+		pDM_Odm->pbNet_closed = pValue;
 		break;
 
 	case ODM_CMNINFO_FORCED_RATE:
-		pDM_Odm->pForcedDataRate = (u16 *)pValue;
+		pDM_Odm->pForcedDataRate = pValue;
 		break;
 
 	case ODM_CMNINFO_FORCED_IGI_LB:
-		pDM_Odm->pu1ForcedIgiLb = (u8 *)pValue;
+		pDM_Odm->pu1ForcedIgiLb = pValue;
 		break;
 
 	case ODM_CMNINFO_MP_MODE:
-		pDM_Odm->mp_mode = (u8 *)pValue;
+		pDM_Odm->mp_mode = pValue;
 		break;
 
 	/* case ODM_CMNINFO_RTSTA_AID: */
@@ -699,7 +674,7 @@ void ODM_CmnInfoHook(PDM_ODM_T pDM_Odm, ODM_CMNINFO_E CmnInfo, void *pValue)
 	/* break; */
 
 	/* case ODM_CMNINFO_MAC_STATUS: */
-	/* pDM_Odm->pMacInfo = (ODM_MAC_INFO *)pValue; */
+	/* pDM_Odm->pMacInfo = (struct odm_mac_status_info *)pValue; */
 	/* break; */
 	/* To remove the compiler warning, must add an empty default statement to handle the other values. */
 	default:
@@ -1084,7 +1059,7 @@ u32 ODM_Get_Rate_Bitmap(
 	/* printk("%s ==> rssi_level:0x%02x, WirelessMode:0x%02x, rate_bitmap:0x%08x\n", __func__, rssi_level, WirelessMode, rate_bitmap); */
 	ODM_RT_TRACE(pDM_Odm, ODM_COMP_RA_MASK, ODM_DBG_LOUD, (" ==> rssi_level:0x%02x, WirelessMode:0x%02x, rate_bitmap:0x%08x\n", rssi_level, WirelessMode, rate_bitmap));
 
-	return (ra_mask&rate_bitmap);
+	return ra_mask & rate_bitmap;
 
 }
 
@@ -1267,13 +1242,11 @@ void odm_RSSIMonitorCheckCE(PDM_ODM_T pDM_Odm)
 	int tmpEntryMaxPWDB = 0, tmpEntryMinPWDB = 0xff;
 	u8 sta_cnt = 0;
 	u32 PWDB_rssi[NUM_STA] = {0};/* 0~15]:MACID, [16~31]:PWDB_rssi */
-	bool FirstConnect = false;
 	pRA_T pRA_Table = &pDM_Odm->DM_RA_Table;
 
 	if (pDM_Odm->bLinked != true)
 		return;
 
-	FirstConnect = (pDM_Odm->bLinked) && (pRA_Table->firstconnect == false);
 	pRA_Table->firstconnect = pDM_Odm->bLinked;
 
 	/* if (check_fwstate(&Adapter->mlmepriv, WIFI_AP_STATE|WIFI_ADHOC_STATE|WIFI_ADHOC_MASTER_STATE) == true) */
@@ -1332,11 +1305,6 @@ void odm_RSSIMonitorCheckCE(PDM_ODM_T pDM_Odm)
 /* 3 Tx Power Tracking */
 /* 3 ============================================================ */
 
-void odm_TXPowerTrackingInit(PDM_ODM_T pDM_Odm)
-{
-	odm_TXPowerTrackingThermalMeterInit(pDM_Odm);
-}
-
 static u8 getSwingIndex(PDM_ODM_T pDM_Odm)
 {
 	struct adapter *Adapter = pDM_Odm->Adapter;
@@ -1361,7 +1329,7 @@ static u8 getSwingIndex(PDM_ODM_T pDM_Odm)
 	return i;
 }
 
-void odm_TXPowerTrackingThermalMeterInit(PDM_ODM_T pDM_Odm)
+void odm_TXPowerTrackingInit(PDM_ODM_T pDM_Odm)
 {
 	u8 defaultSwingIndex = getSwingIndex(pDM_Odm);
 	u8 p = 0;
@@ -1405,13 +1373,7 @@ void odm_TXPowerTrackingThermalMeterInit(PDM_ODM_T pDM_Odm)
 
 }
 
-
 void ODM_TXPowerTrackingCheck(PDM_ODM_T pDM_Odm)
-{
-	odm_TXPowerTrackingCheckCE(pDM_Odm);
-}
-
-void odm_TXPowerTrackingCheckCE(PDM_ODM_T pDM_Odm)
 {
 	struct adapter *Adapter = pDM_Odm->Adapter;
 

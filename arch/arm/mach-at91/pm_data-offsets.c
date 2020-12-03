@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/stddef.h>
 #include <linux/kbuild.h>
 #include "pm.h"
@@ -11,6 +12,10 @@ int main(void)
 	DEFINE(PM_DATA_MODE,		offsetof(struct at91_pm_data, mode));
 	DEFINE(PM_DATA_SHDWC,		offsetof(struct at91_pm_data, shdwc));
 	DEFINE(PM_DATA_SFRBU,		offsetof(struct at91_pm_data, sfrbu));
+	DEFINE(PM_DATA_PMC_MCKR_OFFSET,	offsetof(struct at91_pm_data,
+						 pmc_mckr_offset));
+	DEFINE(PM_DATA_PMC_VERSION,	offsetof(struct at91_pm_data,
+						 pmc_version));
 
 	return 0;
 }

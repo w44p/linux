@@ -1,28 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * RCU segmented callback lists, function definitions
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, you can access it online at
- * http://www.gnu.org/licenses/gpl-2.0.html.
- *
  * Copyright IBM Corporation, 2017
  *
- * Authors: Paul E. McKenney <paulmck@linux.vnet.ibm.com>
+ * Authors: Paul E. McKenney <paulmck@linux.ibm.com>
  */
 
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/interrupt.h>
+#include <linux/rcupdate.h>
 
 #include "rcu_segcblist.h"
 
@@ -32,33 +20,49 @@ void rcu_cblist_init(struct rcu_cblist *rclp)
 	rclp->head = NULL;
 	rclp->tail = &rclp->head;
 	rclp->len = 0;
-	rclp->len_lazy = 0;
 }
 
 /*
- * Debug function to actually count the number of callbacks.
- * If the number exceeds the limit specified, return -1.
+ * Enqueue an rcu_head structure onto the specified callback list.
  */
-long rcu_cblist_count_cbs(struct rcu_cblist *rclp, long lim)
+void rcu_cblist_enqueue(struct rcu_cblist *rclp, struct rcu_head *rhp)
 {
-	int cnt = 0;
-	struct rcu_head **rhpp = &rclp->head;
+	*rclp->tail = rhp;
+	rclp->tail = &rhp->next;
+	WRITE_ONCE(rclp->len, rclp->len + 1);
+}
 
-	for (;;) {
-		if (!*rhpp)
-			return cnt;
-		if (++cnt > lim)
-			return -1;
-		rhpp = &(*rhpp)->next;
+/*
+ * Flush the second rcu_cblist structure onto the first one, obliterating
+ * any contents of the first.  If rhp is non-NULL, enqueue it as the sole
+ * element of the second rcu_cblist structure, but ensuring that the second
+ * rcu_cblist structure, if initially non-empty, always appears non-empty
+ * throughout the process.  If rdp is NULL, the second rcu_cblist structure
+ * is instead initialized to empty.
+ */
+void rcu_cblist_flush_enqueue(struct rcu_cblist *drclp,
+			      struct rcu_cblist *srclp,
+			      struct rcu_head *rhp)
+{
+	drclp->head = srclp->head;
+	if (drclp->head)
+		drclp->tail = srclp->tail;
+	else
+		drclp->tail = &drclp->head;
+	drclp->len = srclp->len;
+	if (!rhp) {
+		rcu_cblist_init(srclp);
+	} else {
+		rhp->next = NULL;
+		srclp->head = rhp;
+		srclp->tail = &rhp->next;
+		WRITE_ONCE(srclp->len, 1);
 	}
 }
 
 /*
  * Dequeue the oldest rcu_head structure from the specified callback
- * list.  This function assumes that the callback is non-lazy, but
- * the caller can later invoke rcu_cblist_dequeued_lazy() if it
- * finds otherwise (and if it cares about laziness).  This allows
- * different users to have different ways of determining laziness.
+ * list.
  */
 struct rcu_head *rcu_cblist_dequeue(struct rcu_cblist *rclp)
 {
@@ -74,6 +78,67 @@ struct rcu_head *rcu_cblist_dequeue(struct rcu_cblist *rclp)
 	return rhp;
 }
 
+/* Set the length of an rcu_segcblist structure. */
+static void rcu_segcblist_set_len(struct rcu_segcblist *rsclp, long v)
+{
+#ifdef CONFIG_RCU_NOCB_CPU
+	atomic_long_set(&rsclp->len, v);
+#else
+	WRITE_ONCE(rsclp->len, v);
+#endif
+}
+
+/*
+ * Increase the numeric length of an rcu_segcblist structure by the
+ * specified amount, which can be negative.  This can cause the ->len
+ * field to disagree with the actual number of callbacks on the structure.
+ * This increase is fully ordered with respect to the callers accesses
+ * both before and after.
+ */
+static void rcu_segcblist_add_len(struct rcu_segcblist *rsclp, long v)
+{
+#ifdef CONFIG_RCU_NOCB_CPU
+	smp_mb__before_atomic(); /* Up to the caller! */
+	atomic_long_add(v, &rsclp->len);
+	smp_mb__after_atomic(); /* Up to the caller! */
+#else
+	smp_mb(); /* Up to the caller! */
+	WRITE_ONCE(rsclp->len, rsclp->len + v);
+	smp_mb(); /* Up to the caller! */
+#endif
+}
+
+/*
+ * Increase the numeric length of an rcu_segcblist structure by one.
+ * This can cause the ->len field to disagree with the actual number of
+ * callbacks on the structure.  This increase is fully ordered with respect
+ * to the callers accesses both before and after.
+ */
+void rcu_segcblist_inc_len(struct rcu_segcblist *rsclp)
+{
+	rcu_segcblist_add_len(rsclp, 1);
+}
+
+/*
+ * Exchange the numeric length of the specified rcu_segcblist structure
+ * with the specified value.  This can cause the ->len field to disagree
+ * with the actual number of callbacks on the structure.  This exchange is
+ * fully ordered with respect to the callers accesses both before and after.
+ */
+static long rcu_segcblist_xchg_len(struct rcu_segcblist *rsclp, long v)
+{
+#ifdef CONFIG_RCU_NOCB_CPU
+	return atomic_long_xchg(&rsclp->len, v);
+#else
+	long ret = rsclp->len;
+
+	smp_mb(); /* Up to the caller! */
+	WRITE_ONCE(rsclp->len, v);
+	smp_mb(); /* Up to the caller! */
+	return ret;
+#endif
+}
+
 /*
  * Initialize an rcu_segcblist structure.
  */
@@ -86,8 +151,8 @@ void rcu_segcblist_init(struct rcu_segcblist *rsclp)
 	rsclp->head = NULL;
 	for (i = 0; i < RCU_CBLIST_NSEGS; i++)
 		rsclp->tails[i] = &rsclp->head;
-	rsclp->len = 0;
-	rsclp->len_lazy = 0;
+	rcu_segcblist_set_len(rsclp, 0);
+	rsclp->enabled = 1;
 }
 
 /*
@@ -98,19 +163,16 @@ void rcu_segcblist_disable(struct rcu_segcblist *rsclp)
 {
 	WARN_ON_ONCE(!rcu_segcblist_empty(rsclp));
 	WARN_ON_ONCE(rcu_segcblist_n_cbs(rsclp));
-	WARN_ON_ONCE(rcu_segcblist_n_lazy_cbs(rsclp));
-	rsclp->tails[RCU_NEXT_TAIL] = NULL;
+	rsclp->enabled = 0;
 }
 
 /*
- * Is the specified segment of the specified rcu_segcblist structure
- * empty of callbacks?
+ * Mark the specified rcu_segcblist structure as offloaded.  This
+ * structure must be empty.
  */
-bool rcu_segcblist_segempty(struct rcu_segcblist *rsclp, int seg)
+void rcu_segcblist_offload(struct rcu_segcblist *rsclp)
 {
-	if (seg == RCU_DONE_TAIL)
-		return &rsclp->head == rsclp->tails[RCU_DONE_TAIL];
-	return rsclp->tails[seg - 1] == rsclp->tails[seg];
+	rsclp->offloaded = 1;
 }
 
 /*
@@ -120,7 +182,7 @@ bool rcu_segcblist_segempty(struct rcu_segcblist *rsclp, int seg)
 bool rcu_segcblist_ready_cbs(struct rcu_segcblist *rsclp)
 {
 	return rcu_segcblist_is_enabled(rsclp) &&
-	       &rsclp->head != rsclp->tails[RCU_DONE_TAIL];
+	       &rsclp->head != READ_ONCE(rsclp->tails[RCU_DONE_TAIL]);
 }
 
 /*
@@ -131,50 +193,6 @@ bool rcu_segcblist_pend_cbs(struct rcu_segcblist *rsclp)
 {
 	return rcu_segcblist_is_enabled(rsclp) &&
 	       !rcu_segcblist_restempty(rsclp, RCU_DONE_TAIL);
-}
-
-/*
- * Dequeue and return the first ready-to-invoke callback.  If there
- * are no ready-to-invoke callbacks, return NULL.  Disables interrupts
- * to avoid interference.  Does not protect from interference from other
- * CPUs or tasks.
- */
-struct rcu_head *rcu_segcblist_dequeue(struct rcu_segcblist *rsclp)
-{
-	unsigned long flags;
-	int i;
-	struct rcu_head *rhp;
-
-	local_irq_save(flags);
-	if (!rcu_segcblist_ready_cbs(rsclp)) {
-		local_irq_restore(flags);
-		return NULL;
-	}
-	rhp = rsclp->head;
-	BUG_ON(!rhp);
-	rsclp->head = rhp->next;
-	for (i = RCU_DONE_TAIL; i < RCU_CBLIST_NSEGS; i++) {
-		if (rsclp->tails[i] != &rhp->next)
-			break;
-		rsclp->tails[i] = &rsclp->head;
-	}
-	smp_mb(); /* Dequeue before decrement for rcu_barrier(). */
-	WRITE_ONCE(rsclp->len, rsclp->len - 1);
-	local_irq_restore(flags);
-	return rhp;
-}
-
-/*
- * Account for the fact that a previously dequeued callback turned out
- * to be marked as lazy.
- */
-void rcu_segcblist_dequeued_lazy(struct rcu_segcblist *rsclp)
-{
-	unsigned long flags;
-
-	local_irq_save(flags);
-	rsclp->len_lazy--;
-	local_irq_restore(flags);
 }
 
 /*
@@ -203,14 +221,15 @@ struct rcu_head *rcu_segcblist_first_pend_cb(struct rcu_segcblist *rsclp)
 }
 
 /*
- * Does the specified rcu_segcblist structure contain callbacks that
- * have not yet been processed beyond having been posted, that is,
- * does it contain callbacks in its last segment?
+ * Return false if there are no CBs awaiting grace periods, otherwise,
+ * return true and store the nearest waited-upon grace period into *lp.
  */
-bool rcu_segcblist_new_cbs(struct rcu_segcblist *rsclp)
+bool rcu_segcblist_nextgp(struct rcu_segcblist *rsclp, unsigned long *lp)
 {
-	return rcu_segcblist_is_enabled(rsclp) &&
-	       !rcu_segcblist_restempty(rsclp, RCU_NEXT_READY_TAIL);
+	if (!rcu_segcblist_pend_cbs(rsclp))
+		return false;
+	*lp = rsclp->gp_seq[RCU_WAIT_TAIL];
+	return true;
 }
 
 /*
@@ -223,15 +242,13 @@ bool rcu_segcblist_new_cbs(struct rcu_segcblist *rsclp)
  * absolutely not OK for it to ever miss posting a callback.
  */
 void rcu_segcblist_enqueue(struct rcu_segcblist *rsclp,
-			   struct rcu_head *rhp, bool lazy)
+			   struct rcu_head *rhp)
 {
-	WRITE_ONCE(rsclp->len, rsclp->len + 1); /* ->len sampled locklessly. */
-	if (lazy)
-		rsclp->len_lazy++;
+	rcu_segcblist_inc_len(rsclp);
 	smp_mb(); /* Ensure counts are updated before callback is enqueued. */
 	rhp->next = NULL;
-	*rsclp->tails[RCU_NEXT_TAIL] = rhp;
-	rsclp->tails[RCU_NEXT_TAIL] = &rhp->next;
+	WRITE_ONCE(*rsclp->tails[RCU_NEXT_TAIL], rhp);
+	WRITE_ONCE(rsclp->tails[RCU_NEXT_TAIL], &rhp->next);
 }
 
 /*
@@ -245,23 +262,21 @@ void rcu_segcblist_enqueue(struct rcu_segcblist *rsclp,
  * period.  You have been warned.
  */
 bool rcu_segcblist_entrain(struct rcu_segcblist *rsclp,
-			   struct rcu_head *rhp, bool lazy)
+			   struct rcu_head *rhp)
 {
 	int i;
 
 	if (rcu_segcblist_n_cbs(rsclp) == 0)
 		return false;
-	WRITE_ONCE(rsclp->len, rsclp->len + 1);
-	if (lazy)
-		rsclp->len_lazy++;
+	rcu_segcblist_inc_len(rsclp);
 	smp_mb(); /* Ensure counts are updated before callback is entrained. */
 	rhp->next = NULL;
 	for (i = RCU_NEXT_TAIL; i > RCU_DONE_TAIL; i--)
 		if (rsclp->tails[i] != rsclp->tails[i - 1])
 			break;
-	*rsclp->tails[i] = rhp;
+	WRITE_ONCE(*rsclp->tails[i], rhp);
 	for (; i <= RCU_NEXT_TAIL; i++)
-		rsclp->tails[i] = &rhp->next;
+		WRITE_ONCE(rsclp->tails[i], &rhp->next);
 	return true;
 }
 
@@ -277,10 +292,7 @@ bool rcu_segcblist_entrain(struct rcu_segcblist *rsclp,
 void rcu_segcblist_extract_count(struct rcu_segcblist *rsclp,
 					       struct rcu_cblist *rclp)
 {
-	rclp->len_lazy += rsclp->len_lazy;
-	rclp->len += rsclp->len;
-	rsclp->len_lazy = 0;
-	WRITE_ONCE(rsclp->len, 0); /* ->len sampled locklessly. */
+	rclp->len = rcu_segcblist_xchg_len(rsclp, 0);
 }
 
 /*
@@ -296,12 +308,12 @@ void rcu_segcblist_extract_done_cbs(struct rcu_segcblist *rsclp,
 	if (!rcu_segcblist_ready_cbs(rsclp))
 		return; /* Nothing to do. */
 	*rclp->tail = rsclp->head;
-	rsclp->head = *rsclp->tails[RCU_DONE_TAIL];
-	*rsclp->tails[RCU_DONE_TAIL] = NULL;
+	WRITE_ONCE(rsclp->head, *rsclp->tails[RCU_DONE_TAIL]);
+	WRITE_ONCE(*rsclp->tails[RCU_DONE_TAIL], NULL);
 	rclp->tail = rsclp->tails[RCU_DONE_TAIL];
 	for (i = RCU_CBLIST_NSEGS - 1; i >= RCU_DONE_TAIL; i--)
 		if (rsclp->tails[i] == rsclp->tails[RCU_DONE_TAIL])
-			rsclp->tails[i] = &rsclp->head;
+			WRITE_ONCE(rsclp->tails[i], &rsclp->head);
 }
 
 /*
@@ -320,9 +332,9 @@ void rcu_segcblist_extract_pend_cbs(struct rcu_segcblist *rsclp,
 		return; /* Nothing to do. */
 	*rclp->tail = *rsclp->tails[RCU_DONE_TAIL];
 	rclp->tail = rsclp->tails[RCU_NEXT_TAIL];
-	*rsclp->tails[RCU_DONE_TAIL] = NULL;
+	WRITE_ONCE(*rsclp->tails[RCU_DONE_TAIL], NULL);
 	for (i = RCU_DONE_TAIL + 1; i < RCU_CBLIST_NSEGS; i++)
-		rsclp->tails[i] = rsclp->tails[RCU_DONE_TAIL];
+		WRITE_ONCE(rsclp->tails[i], rsclp->tails[RCU_DONE_TAIL]);
 }
 
 /*
@@ -332,10 +344,7 @@ void rcu_segcblist_extract_pend_cbs(struct rcu_segcblist *rsclp,
 void rcu_segcblist_insert_count(struct rcu_segcblist *rsclp,
 				struct rcu_cblist *rclp)
 {
-	rsclp->len_lazy += rclp->len_lazy;
-	/* ->len sampled locklessly. */
-	WRITE_ONCE(rsclp->len, rsclp->len + rclp->len);
-	rclp->len_lazy = 0;
+	rcu_segcblist_add_len(rsclp, rclp->len);
 	rclp->len = 0;
 }
 
@@ -351,10 +360,10 @@ void rcu_segcblist_insert_done_cbs(struct rcu_segcblist *rsclp,
 	if (!rclp->head)
 		return; /* No callbacks to move. */
 	*rclp->tail = rsclp->head;
-	rsclp->head = rclp->head;
+	WRITE_ONCE(rsclp->head, rclp->head);
 	for (i = RCU_DONE_TAIL; i < RCU_CBLIST_NSEGS; i++)
 		if (&rsclp->head == rsclp->tails[i])
-			rsclp->tails[i] = rclp->tail;
+			WRITE_ONCE(rsclp->tails[i], rclp->tail);
 		else
 			break;
 	rclp->head = NULL;
@@ -370,10 +379,8 @@ void rcu_segcblist_insert_pend_cbs(struct rcu_segcblist *rsclp,
 {
 	if (!rclp->head)
 		return; /* Nothing to do. */
-	*rsclp->tails[RCU_NEXT_TAIL] = rclp->head;
-	rsclp->tails[RCU_NEXT_TAIL] = rclp->tail;
-	rclp->head = NULL;
-	rclp->tail = &rclp->head;
+	WRITE_ONCE(*rsclp->tails[RCU_NEXT_TAIL], rclp->head);
+	WRITE_ONCE(rsclp->tails[RCU_NEXT_TAIL], rclp->tail);
 }
 
 /*
@@ -395,7 +402,7 @@ void rcu_segcblist_advance(struct rcu_segcblist *rsclp, unsigned long seq)
 	for (i = RCU_WAIT_TAIL; i < RCU_NEXT_TAIL; i++) {
 		if (ULONG_CMP_LT(seq, rsclp->gp_seq[i]))
 			break;
-		rsclp->tails[RCU_DONE_TAIL] = rsclp->tails[i];
+		WRITE_ONCE(rsclp->tails[RCU_DONE_TAIL], rsclp->tails[i]);
 	}
 
 	/* If no callbacks moved, nothing more need be done. */
@@ -404,7 +411,7 @@ void rcu_segcblist_advance(struct rcu_segcblist *rsclp, unsigned long seq)
 
 	/* Clean up tail pointers that might have been misordered above. */
 	for (j = RCU_WAIT_TAIL; j < i; j++)
-		rsclp->tails[j] = rsclp->tails[RCU_DONE_TAIL];
+		WRITE_ONCE(rsclp->tails[j], rsclp->tails[RCU_DONE_TAIL]);
 
 	/*
 	 * Callbacks moved, so clean up the misordered ->tails[] pointers
@@ -415,7 +422,7 @@ void rcu_segcblist_advance(struct rcu_segcblist *rsclp, unsigned long seq)
 	for (j = RCU_WAIT_TAIL; i < RCU_NEXT_TAIL; i++, j++) {
 		if (rsclp->tails[j] == rsclp->tails[RCU_NEXT_TAIL])
 			break;  /* No more callbacks. */
-		rsclp->tails[j] = rsclp->tails[i];
+		WRITE_ONCE(rsclp->tails[j], rsclp->tails[i]);
 		rsclp->gp_seq[j] = rsclp->gp_seq[i];
 	}
 }
@@ -468,8 +475,16 @@ bool rcu_segcblist_accelerate(struct rcu_segcblist *rsclp, unsigned long seq)
 	 * Also advance to the oldest segment of callbacks whose
 	 * ->gp_seq[] completion is at or after that passed in via "seq",
 	 * skipping any empty segments.
+	 *
+	 * Note that segment "i" (and any lower-numbered segments
+	 * containing older callbacks) will be unaffected, and their
+	 * grace-period numbers remain unchanged.  For example, if i ==
+	 * WAIT_TAIL, then neither WAIT_TAIL nor DONE_TAIL will be touched.
+	 * Instead, the CBs in NEXT_TAIL will be merged with those in
+	 * NEXT_READY_TAIL and the grace-period number of NEXT_READY_TAIL
+	 * would be updated.  NEXT_TAIL would then be empty.
 	 */
-	if (++i >= RCU_NEXT_TAIL)
+	if (rcu_segcblist_restempty(rsclp, i) || ++i >= RCU_NEXT_TAIL)
 		return false;
 
 	/*
@@ -480,26 +495,32 @@ bool rcu_segcblist_accelerate(struct rcu_segcblist *rsclp, unsigned long seq)
 	 * structure other than in the RCU_NEXT_TAIL segment.
 	 */
 	for (; i < RCU_NEXT_TAIL; i++) {
-		rsclp->tails[i] = rsclp->tails[RCU_NEXT_TAIL];
+		WRITE_ONCE(rsclp->tails[i], rsclp->tails[RCU_NEXT_TAIL]);
 		rsclp->gp_seq[i] = seq;
 	}
 	return true;
 }
 
 /*
- * Scan the specified rcu_segcblist structure for callbacks that need
- * a grace period later than the one specified by "seq".  We don't look
- * at the RCU_DONE_TAIL or RCU_NEXT_TAIL segments because they don't
- * have a grace-period sequence number.
+ * Merge the source rcu_segcblist structure into the destination
+ * rcu_segcblist structure, then initialize the source.  Any pending
+ * callbacks from the source get to start over.  It is best to
+ * advance and accelerate both the destination and the source
+ * before merging.
  */
-bool rcu_segcblist_future_gp_needed(struct rcu_segcblist *rsclp,
-				    unsigned long seq)
+void rcu_segcblist_merge(struct rcu_segcblist *dst_rsclp,
+			 struct rcu_segcblist *src_rsclp)
 {
-	int i;
+	struct rcu_cblist donecbs;
+	struct rcu_cblist pendcbs;
 
-	for (i = RCU_WAIT_TAIL; i < RCU_NEXT_TAIL; i++)
-		if (rsclp->tails[i - 1] != rsclp->tails[i] &&
-		    ULONG_CMP_LT(seq, rsclp->gp_seq[i]))
-			return true;
-	return false;
+	rcu_cblist_init(&donecbs);
+	rcu_cblist_init(&pendcbs);
+	rcu_segcblist_extract_count(src_rsclp, &donecbs);
+	rcu_segcblist_extract_done_cbs(src_rsclp, &donecbs);
+	rcu_segcblist_extract_pend_cbs(src_rsclp, &pendcbs);
+	rcu_segcblist_insert_count(dst_rsclp, &donecbs);
+	rcu_segcblist_insert_done_cbs(dst_rsclp, &donecbs);
+	rcu_segcblist_insert_pend_cbs(dst_rsclp, &pendcbs);
+	rcu_segcblist_init(src_rsclp);
 }

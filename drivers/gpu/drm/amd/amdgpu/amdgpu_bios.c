@@ -25,10 +25,11 @@
  *          Alex Deucher
  *          Jerome Glisse
  */
-#include <drm/drmP.h>
+
 #include "amdgpu.h"
 #include "atom.h"
 
+#include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/acpi.h>
 /*
@@ -59,12 +60,6 @@ static bool check_atom_bios(uint8_t *bios, size_t size)
 		return false;
 	}
 
-	tmp = bios[0x18] | (bios[0x19] << 8);
-	if (bios[tmp + 0x14] != 0x0) {
-		DRM_INFO("Not an x86 BIOS ROM\n");
-		return false;
-	}
-
 	bios_header_start = bios[0x48] | (bios[0x49] << 8);
 	if (!bios_header_start) {
 		DRM_INFO("Can't locate bios header\n");
@@ -86,19 +81,6 @@ static bool check_atom_bios(uint8_t *bios, size_t size)
 	return false;
 }
 
-static bool is_atom_fw(uint8_t *bios)
-{
-	uint16_t bios_header_start = bios[0x48] | (bios[0x49] << 8);
-	uint8_t frev = bios[bios_header_start + 2];
-	uint8_t crev = bios[bios_header_start + 3];
-
-	if ((frev < 3) ||
-	    ((frev == 3) && (crev < 3)))
-		return false;
-
-	return true;
-}
-
 /* If you boot an IGP board with a discrete card as the primary,
  * the IGP rom is not accessible via the rom bar as the IGP rom is
  * part of the system bios.  On boot, the system bios puts a
@@ -112,12 +94,12 @@ static bool igp_read_bios_from_vram(struct amdgpu_device *adev)
 	resource_size_t size = 256 * 1024; /* ??? */
 
 	if (!(adev->flags & AMD_IS_APU))
-		if (amdgpu_need_post(adev))
+		if (amdgpu_device_need_post(adev))
 			return false;
 
 	adev->bios = NULL;
 	vram_base = pci_resource_start(adev->pdev, 0);
-	bios = ioremap(vram_base, size);
+	bios = ioremap_wc(vram_base, size);
 	if (!bios) {
 		return false;
 	}
@@ -210,30 +192,35 @@ static bool amdgpu_read_bios_from_rom(struct amdgpu_device *adev)
 
 static bool amdgpu_read_platform_bios(struct amdgpu_device *adev)
 {
-	uint8_t __iomem *bios;
-	size_t size;
+	phys_addr_t rom = adev->pdev->rom;
+	size_t romlen = adev->pdev->romlen;
+	void __iomem *bios;
 
 	adev->bios = NULL;
 
-	bios = pci_platform_rom(adev->pdev, &size);
-	if (!bios) {
-		return false;
-	}
-
-	adev->bios = kzalloc(size, GFP_KERNEL);
-	if (adev->bios == NULL)
+	if (!rom || romlen == 0)
 		return false;
 
-	memcpy_fromio(adev->bios, bios, size);
-
-	if (!check_atom_bios(adev->bios, size)) {
-		kfree(adev->bios);
+	adev->bios = kzalloc(romlen, GFP_KERNEL);
+	if (!adev->bios)
 		return false;
-	}
 
-	adev->bios_size = size;
+	bios = ioremap(rom, romlen);
+	if (!bios)
+		goto free_bios;
+
+	memcpy_fromio(adev->bios, bios, romlen);
+	iounmap(bios);
+
+	if (!check_atom_bios(adev->bios, romlen))
+		goto free_bios;
+
+	adev->bios_size = romlen;
 
 	return true;
+free_bios:
+	kfree(adev->bios);
+	return false;
 }
 
 #ifdef CONFIG_ACPI
@@ -430,31 +417,45 @@ static inline bool amdgpu_acpi_vfct_bios(struct amdgpu_device *adev)
 
 bool amdgpu_get_bios(struct amdgpu_device *adev)
 {
-	if (amdgpu_atrm_get_bios(adev))
+	if (amdgpu_atrm_get_bios(adev)) {
+		dev_info(adev->dev, "Fetched VBIOS from ATRM\n");
 		goto success;
+	}
 
-	if (amdgpu_acpi_vfct_bios(adev))
+	if (amdgpu_acpi_vfct_bios(adev)) {
+		dev_info(adev->dev, "Fetched VBIOS from VFCT\n");
 		goto success;
+	}
 
-	if (igp_read_bios_from_vram(adev))
+	if (igp_read_bios_from_vram(adev)) {
+		dev_info(adev->dev, "Fetched VBIOS from VRAM BAR\n");
 		goto success;
+	}
 
-	if (amdgpu_read_bios(adev))
+	if (amdgpu_read_bios(adev)) {
+		dev_info(adev->dev, "Fetched VBIOS from ROM BAR\n");
 		goto success;
+	}
 
-	if (amdgpu_read_bios_from_rom(adev))
+	if (amdgpu_read_bios_from_rom(adev)) {
+		dev_info(adev->dev, "Fetched VBIOS from ROM\n");
 		goto success;
+	}
 
-	if (amdgpu_read_disabled_bios(adev))
+	if (amdgpu_read_disabled_bios(adev)) {
+		dev_info(adev->dev, "Fetched VBIOS from disabled ROM BAR\n");
 		goto success;
+	}
 
-	if (amdgpu_read_platform_bios(adev))
+	if (amdgpu_read_platform_bios(adev)) {
+		dev_info(adev->dev, "Fetched VBIOS from platform\n");
 		goto success;
+	}
 
 	DRM_ERROR("Unable to locate a BIOS ROM\n");
 	return false;
 
 success:
-	adev->is_atom_fw = is_atom_fw(adev->bios);
+	adev->is_atom_fw = (adev->asic_type >= CHIP_VEGA10) ? true : false;
 	return true;
 }

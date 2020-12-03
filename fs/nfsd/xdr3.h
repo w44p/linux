@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * XDR types for NFSv3 in nfsd.
  *
@@ -13,7 +14,7 @@ struct nfsd3_sattrargs {
 	struct svc_fh		fh;
 	struct iattr		attrs;
 	int			check_guard;
-	time_t			guardtime;
+	time64_t		guardtime;
 };
 
 struct nfsd3_diropargs {
@@ -40,7 +41,7 @@ struct nfsd3_writeargs {
 	__u32			count;
 	int			stable;
 	__u32			len;
-	int			vlen;
+	struct kvec		first;
 };
 
 struct nfsd3_createargs {
@@ -89,6 +90,7 @@ struct nfsd3_symlinkargs {
 	char *			tname;
 	unsigned int		tlen;
 	struct iattr		attrs;
+	struct kvec		first;
 };
 
 struct nfsd3_readdirargs {
@@ -149,7 +151,7 @@ struct nfsd3_readres {
 	__be32			status;
 	struct svc_fh		fh;
 	unsigned long		count;
-	int			eof;
+	__u32			eof;
 };
 
 struct nfsd3_writeres {
@@ -157,6 +159,7 @@ struct nfsd3_writeres {
 	struct svc_fh		fh;
 	unsigned long		count;
 	int			committed;
+	__be32			verf[2];
 };
 
 struct nfsd3_renameres {
@@ -221,6 +224,7 @@ struct nfsd3_pathconfres {
 struct nfsd3_commitres {
 	__be32			status;
 	struct svc_fh		fh;
+	__be32			verf[2];
 };
 
 struct nfsd3_getaclres {
@@ -269,6 +273,7 @@ union nfsd3_xdrstore {
 
 #define NFS3_SVC_XDRSIZE		sizeof(union nfsd3_xdrstore)
 
+int nfs3svc_decode_voidarg(struct svc_rqst *, __be32 *);
 int nfs3svc_decode_fhandle(struct svc_rqst *, __be32 *);
 int nfs3svc_decode_sattrargs(struct svc_rqst *, __be32 *);
 int nfs3svc_decode_diropargs(struct svc_rqst *, __be32 *);

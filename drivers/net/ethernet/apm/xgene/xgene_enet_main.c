@@ -1,22 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* Applied Micro X-Gene SoC Ethernet Driver
  *
  * Copyright (c) 2014, Applied Micro Circuits Corporation
  * Authors: Iyappan Subramanian <isubramanian@apm.com>
  *	    Ravi Patel <rapatel@apm.com>
  *	    Keyur Chudgar <kchudgar@apm.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/gpio.h>
@@ -28,9 +16,6 @@
 #define RES_ENET_CSR	0
 #define RES_RING_CSR	1
 #define RES_RING_CMD	2
-
-static const struct of_device_id xgene_enet_of_match[];
-static const struct acpi_device_id xgene_enet_acpi_match[];
 
 static void xgene_enet_init_bufpool(struct xgene_enet_desc_ring *buf_pool)
 {
@@ -355,7 +340,8 @@ static int xgene_enet_work_msg(struct sk_buff *skb, u64 *hopinfo)
 				nr_frags = skb_shinfo(skb)->nr_frags;
 
 				for (i = 0; i < 2 && i < nr_frags; i++)
-					len += skb_shinfo(skb)->frags[i].size;
+					len += skb_frag_size(
+						&skb_shinfo(skb)->frags[i]);
 
 				/* HW requires header must reside in 3 buffer */
 				if (unlikely(hdr_len > len)) {
@@ -873,7 +859,7 @@ static int xgene_enet_napi(struct napi_struct *napi, const int budget)
 	return processed;
 }
 
-static void xgene_enet_timeout(struct net_device *ndev)
+static void xgene_enet_timeout(struct net_device *ndev, unsigned int txqueue)
 {
 	struct xgene_enet_pdata *pdata = netdev_priv(ndev);
 	struct netdev_queue *txq;
@@ -1591,7 +1577,7 @@ static int xgene_get_tx_delay(struct xgene_enet_pdata *pdata)
 	struct device *dev = &pdata->pdev->dev;
 	int delay, ret;
 
-	ret = of_property_read_u32(dev->of_node, "tx-delay", &delay);
+	ret = device_property_read_u32(dev, "tx-delay", &delay);
 	if (ret) {
 		pdata->tx_delay = 4;
 		return 0;
@@ -1612,7 +1598,7 @@ static int xgene_get_rx_delay(struct xgene_enet_pdata *pdata)
 	struct device *dev = &pdata->pdev->dev;
 	int delay, ret;
 
-	ret = of_property_read_u32(dev->of_node, "rx-delay", &delay);
+	ret = device_property_read_u32(dev, "rx-delay", &delay);
 	if (ret) {
 		pdata->rx_delay = 2;
 		return 0;
@@ -1631,7 +1617,6 @@ static int xgene_get_rx_delay(struct xgene_enet_pdata *pdata)
 static int xgene_enet_get_irqs(struct xgene_enet_pdata *pdata)
 {
 	struct platform_device *pdev = pdata->pdev;
-	struct device *dev = &pdev->dev;
 	int i, ret, max_irqs;
 
 	if (phy_interface_mode_is_rgmii(pdata->phy_mode))
@@ -1651,9 +1636,7 @@ static int xgene_enet_get_irqs(struct xgene_enet_pdata *pdata)
 				pdata->cq_cnt = max_irqs / 2;
 				break;
 			}
-			dev_err(dev, "Unable to get ENET IRQ\n");
-			ret = ret ? : -ENXIO;
-			return ret;
+			return ret ? : -ENXIO;
 		}
 		pdata->irqs[i] = ret;
 	}
@@ -1661,21 +1644,19 @@ static int xgene_enet_get_irqs(struct xgene_enet_pdata *pdata)
 	return 0;
 }
 
-static int xgene_enet_check_phy_handle(struct xgene_enet_pdata *pdata)
+static void xgene_enet_check_phy_handle(struct xgene_enet_pdata *pdata)
 {
 	int ret;
 
 	if (pdata->phy_mode == PHY_INTERFACE_MODE_XGMII)
-		return 0;
+		return;
 
 	if (!IS_ENABLED(CONFIG_MDIO_XGENE))
-		return 0;
+		return;
 
 	ret = xgene_enet_phy_connect(pdata->ndev);
 	if (!ret)
 		pdata->mdio_driver = true;
-
-	return 0;
 }
 
 static void xgene_enet_gpiod_get(struct xgene_enet_pdata *pdata)
@@ -1776,10 +1757,6 @@ static int xgene_enet_get_resources(struct xgene_enet_pdata *pdata)
 		return ret;
 
 	ret = xgene_enet_get_irqs(pdata);
-	if (ret)
-		return ret;
-
-	ret = xgene_enet_check_phy_handle(pdata);
 	if (ret)
 		return ret;
 
@@ -2043,7 +2020,7 @@ static int xgene_enet_probe(struct platform_device *pdev)
 	int ret;
 
 	ndev = alloc_etherdev_mqs(sizeof(struct xgene_enet_pdata),
-				  XGENE_NUM_RX_RING, XGENE_NUM_TX_RING);
+				  XGENE_NUM_TX_RING, XGENE_NUM_RX_RING);
 	if (!ndev)
 		return -ENOMEM;
 
@@ -2097,9 +2074,11 @@ static int xgene_enet_probe(struct platform_device *pdev)
 		goto err;
 	}
 
+	xgene_enet_check_phy_handle(pdata);
+
 	ret = xgene_enet_init_hw(pdata);
 	if (ret)
-		goto err;
+		goto err2;
 
 	link_state = pdata->mac_ops->link_state;
 	if (pdata->phy_mode == PHY_INTERFACE_MODE_XGMII) {
@@ -2117,29 +2096,30 @@ static int xgene_enet_probe(struct platform_device *pdev)
 	spin_lock_init(&pdata->stats_lock);
 	ret = xgene_extd_stats_init(pdata);
 	if (ret)
-		goto err2;
+		goto err1;
 
 	xgene_enet_napi_add(pdata);
 	ret = register_netdev(ndev);
 	if (ret) {
 		netdev_err(ndev, "Failed to register netdev\n");
-		goto err2;
+		goto err1;
 	}
 
 	return 0;
 
-err2:
+err1:
 	/*
 	 * If necessary, free_netdev() will call netif_napi_del() and undo
 	 * the effects of xgene_enet_napi_add()'s calls to netif_napi_add().
 	 */
 
+	xgene_enet_delete_desc_rings(pdata);
+
+err2:
 	if (pdata->mdio_driver)
 		xgene_enet_phy_disconnect(pdata);
 	else if (phy_interface_mode_is_rgmii(pdata->phy_mode))
 		xgene_enet_mdio_remove(pdata);
-err1:
-	xgene_enet_delete_desc_rings(pdata);
 err:
 	free_netdev(ndev);
 	return ret;
@@ -2199,7 +2179,6 @@ static struct platform_driver xgene_enet_driver = {
 module_platform_driver(xgene_enet_driver);
 
 MODULE_DESCRIPTION("APM X-Gene SoC Ethernet driver");
-MODULE_VERSION(XGENE_DRV_VERSION);
 MODULE_AUTHOR("Iyappan Subramanian <isubramanian@apm.com>");
 MODULE_AUTHOR("Keyur Chudgar <kchudgar@apm.com>");
 MODULE_LICENSE("GPL");

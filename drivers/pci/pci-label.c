@@ -1,6 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Purpose: Export the firmware instance and label associated with
- * a pci device to sysfs
+ * Export the firmware instance and label associated with a PCI device to
+ * sysfs
+ *
  * Copyright (C) 2010 Dell Inc.
  * by Narendra K <Narendra_K@dell.com>,
  * Jordan Hargrave <Jordan_Hargrave@dell.com>
@@ -16,7 +18,7 @@
  * the instance number and string from the type 41 record and exports
  * it to sysfs.
  *
- * Please see http://linux.dell.com/files/biosdevname/ for more
+ * Please see https://linux.dell.com/files/biosdevname/ for more
  * information.
  */
 
@@ -123,7 +125,7 @@ static struct attribute *smbios_attributes[] = {
 	NULL,
 };
 
-static struct attribute_group smbios_attr_group = {
+static const struct attribute_group smbios_attr_group = {
 	.attrs = smbios_attributes,
 	.is_visible = smbios_instance_string_exist,
 };
@@ -176,7 +178,7 @@ static int dsm_get_label(struct device *dev, char *buf,
 		return -1;
 
 	obj = acpi_evaluate_dsm(handle, &pci_acpi_dsm_guid, 0x2,
-				DEVICE_LABEL_DSM, NULL);
+				DSM_PCI_DEVICE_NAME, NULL);
 	if (!obj)
 		return -1;
 
@@ -216,7 +218,7 @@ static bool device_has_dsm(struct device *dev)
 		return false;
 
 	return !!acpi_check_dsm(handle, &pci_acpi_dsm_guid, 0x2,
-				1 << DEVICE_LABEL_DSM);
+				1 << DSM_PCI_DEVICE_NAME);
 }
 
 static umode_t acpi_index_string_exist(struct kobject *kobj,
@@ -260,7 +262,7 @@ static struct attribute *acpi_attributes[] = {
 	NULL,
 };
 
-static struct attribute_group acpi_attr_group = {
+static const struct attribute_group acpi_attr_group = {
 	.attrs = acpi_attributes,
 	.is_visible = acpi_index_string_exist,
 };

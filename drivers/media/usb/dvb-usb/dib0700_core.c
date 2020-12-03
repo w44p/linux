@@ -1,8 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* Linux driver for devices based on the DiBcom DiB0700 USB bridge
- *
- *	This program is free software; you can redistribute it and/or modify it
- *	under the terms of the GNU General Public License as published by the Free
- *	Software Foundation, version 2.
  *
  *  Copyright (C) 2005-6 DiBcom, SA
  */
@@ -375,8 +372,10 @@ struct i2c_algorithm dib0700_i2c_algo = {
 	.functionality = dib0700_i2c_func,
 };
 
-int dib0700_identify_state(struct usb_device *udev, struct dvb_usb_device_properties *props,
-			struct dvb_usb_device_description **desc, int *cold)
+int dib0700_identify_state(struct usb_device *udev,
+			   const struct dvb_usb_device_properties *props,
+			   const struct dvb_usb_device_description **desc,
+			   int *cold)
 {
 	s16 ret;
 	u8 *b;
@@ -638,7 +637,7 @@ int dib0700_streaming_ctrl(struct dvb_usb_adapter *adap, int onoff)
 	return ret;
 }
 
-int dib0700_change_protocol(struct rc_dev *rc, u64 *rc_type)
+int dib0700_change_protocol(struct rc_dev *rc, u64 *rc_proto)
 {
 	struct dvb_usb_device *d = rc->priv;
 	struct dib0700_state *st = d->priv;
@@ -654,19 +653,19 @@ int dib0700_change_protocol(struct rc_dev *rc, u64 *rc_type)
 	st->buf[2] = 0;
 
 	/* Set the IR mode */
-	if (*rc_type & RC_BIT_RC5) {
+	if (*rc_proto & RC_PROTO_BIT_RC5) {
 		new_proto = 1;
-		*rc_type = RC_BIT_RC5;
-	} else if (*rc_type & RC_BIT_NEC) {
+		*rc_proto = RC_PROTO_BIT_RC5;
+	} else if (*rc_proto & RC_PROTO_BIT_NEC) {
 		new_proto = 0;
-		*rc_type = RC_BIT_NEC;
-	} else if (*rc_type & RC_BIT_RC6_MCE) {
+		*rc_proto = RC_PROTO_BIT_NEC;
+	} else if (*rc_proto & RC_PROTO_BIT_RC6_MCE) {
 		if (st->fw_version < 0x10200) {
 			ret = -EINVAL;
 			goto out;
 		}
 		new_proto = 2;
-		*rc_type = RC_BIT_RC6_MCE;
+		*rc_proto = RC_PROTO_BIT_RC6_MCE;
 	} else {
 		ret = -EINVAL;
 		goto out;
@@ -680,7 +679,7 @@ int dib0700_change_protocol(struct rc_dev *rc, u64 *rc_type)
 		goto out;
 	}
 
-	d->props.rc.core.protocol = *rc_type;
+	d->props.rc.core.protocol = *rc_proto;
 
 out:
 	mutex_unlock(&d->usb_mutex);
@@ -712,7 +711,7 @@ static void dib0700_rc_urb_completion(struct urb *purb)
 {
 	struct dvb_usb_device *d = purb->context;
 	struct dib0700_rc_response *poll_reply;
-	enum rc_type protocol;
+	enum rc_proto protocol;
 	u32 keycode;
 	u8 toggle;
 
@@ -745,7 +744,7 @@ static void dib0700_rc_urb_completion(struct urb *purb)
 		 purb->actual_length);
 
 	switch (d->props.rc.core.protocol) {
-	case RC_BIT_NEC:
+	case RC_PROTO_BIT_NEC:
 		toggle = 0;
 
 		/* NEC protocol sends repeat code as 0 0 0 FF */
@@ -764,25 +763,25 @@ static void dib0700_rc_urb_completion(struct urb *purb)
 						     poll_reply->nec.not_system << 16 |
 						     poll_reply->nec.data       << 8  |
 						     poll_reply->nec.not_data);
-			protocol = RC_TYPE_NEC32;
+			protocol = RC_PROTO_NEC32;
 		} else if ((poll_reply->nec.system ^ poll_reply->nec.not_system) != 0xff) {
 			deb_data("NEC extended protocol\n");
 			keycode = RC_SCANCODE_NECX(poll_reply->nec.system << 8 |
 						    poll_reply->nec.not_system,
 						    poll_reply->nec.data);
 
-			protocol = RC_TYPE_NECX;
+			protocol = RC_PROTO_NECX;
 		} else {
 			deb_data("NEC normal protocol\n");
 			keycode = RC_SCANCODE_NEC(poll_reply->nec.system,
 						   poll_reply->nec.data);
-			protocol = RC_TYPE_NEC;
+			protocol = RC_PROTO_NEC;
 		}
 
 		break;
 	default:
 		deb_data("RC5 protocol\n");
-		protocol = RC_TYPE_RC5;
+		protocol = RC_PROTO_RC5;
 		toggle = poll_reply->report_id;
 		keycode = RC_SCANCODE_RC5(poll_reply->rc5.system, poll_reply->rc5.data);
 
@@ -821,7 +820,7 @@ int dib0700_rc_setup(struct dvb_usb_device *d, struct usb_interface *intf)
 
 	/* Starting in firmware 1.20, the RC info is provided on a bulk pipe */
 
-	if (intf->altsetting[0].desc.bNumEndpoints < rc_ep + 1)
+	if (intf->cur_altsetting->desc.bNumEndpoints < rc_ep + 1)
 		return -ENODEV;
 
 	purb = usb_alloc_urb(0, GFP_KERNEL);
@@ -841,7 +840,7 @@ int dib0700_rc_setup(struct dvb_usb_device *d, struct usb_interface *intf)
 	 * Some devices like the Hauppauge NovaTD model 52009 use an interrupt
 	 * endpoint, while others use a bulk one.
 	 */
-	e = &intf->altsetting[0].endpoint[rc_ep].desc;
+	e = &intf->cur_altsetting->endpoint[rc_ep].desc;
 	if (usb_endpoint_dir_in(e)) {
 		if (usb_endpoint_xfer_bulk(e)) {
 			pipe = usb_rcvbulkpipe(d->udev, rc_ep);
@@ -911,10 +910,34 @@ static int dib0700_probe(struct usb_interface *intf,
 	return -ENODEV;
 }
 
+static void dib0700_disconnect(struct usb_interface *intf)
+{
+	struct dvb_usb_device *d = usb_get_intfdata(intf);
+	struct dib0700_state *st = d->priv;
+	struct i2c_client *client;
+
+	/* remove I2C client for tuner */
+	client = st->i2c_client_tuner;
+	if (client) {
+		module_put(client->dev.driver->owner);
+		i2c_unregister_device(client);
+	}
+
+	/* remove I2C client for demodulator */
+	client = st->i2c_client_demod;
+	if (client) {
+		module_put(client->dev.driver->owner);
+		i2c_unregister_device(client);
+	}
+
+	dvb_usb_device_exit(intf);
+}
+
+
 static struct usb_driver dib0700_driver = {
 	.name       = "dvb_usb_dib0700",
 	.probe      = dib0700_probe,
-	.disconnect = dvb_usb_device_exit,
+	.disconnect = dib0700_disconnect,
 	.id_table   = dib0700_usb_id_table,
 };
 

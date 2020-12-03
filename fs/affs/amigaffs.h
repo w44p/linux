@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef AMIGAFFS_H
 #define AMIGAFFS_H
 
@@ -30,6 +31,9 @@
 #define ST_LINKDIR	4
 
 #define AFFS_ROOT_BMAPS		25
+
+/* Seconds since Amiga epoch of 1978/01/01 to UNIX */
+#define AFFS_EPOCH_DELTA ((8 * 365 + 2) * 86400LL)
 
 struct affs_date {
 	__be32 days;

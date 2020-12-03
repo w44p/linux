@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/m68k/sun3/dvma.c
  *
@@ -10,10 +11,9 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/list.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
 #include <asm/sun3mmu.h>
 #include <asm/dvma.h>
 

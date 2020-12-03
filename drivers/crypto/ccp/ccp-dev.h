@@ -1,31 +1,30 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * AMD Cryptographic Coprocessor (CCP) driver
  *
- * Copyright (C) 2013,2016 Advanced Micro Devices, Inc.
+ * Copyright (C) 2013,2017 Advanced Micro Devices, Inc.
  *
  * Author: Tom Lendacky <thomas.lendacky@amd.com>
  * Author: Gary R Hook <gary.hook@amd.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __CCP_DEV_H__
 #define __CCP_DEV_H__
 
 #include <linux/device.h>
-#include <linux/pci.h>
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
 #include <linux/list.h>
 #include <linux/wait.h>
+#include <linux/dma-direction.h>
 #include <linux/dmapool.h>
 #include <linux/hw_random.h>
 #include <linux/bitops.h>
 #include <linux/interrupt.h>
 #include <linux/irqreturn.h>
 #include <linux/dmaengine.h>
+
+#include "sp-dev.h"
 
 #define MAX_CCP_NAME_LEN		16
 #define MAX_DMAPOOL_NAME_LEN		32
@@ -192,6 +191,7 @@
 #define CCP_AES_CTX_SB_COUNT		1
 
 #define CCP_XTS_AES_KEY_SB_COUNT	1
+#define CCP5_XTS_AES_KEY_SB_COUNT	2
 #define CCP_XTS_AES_CTX_SB_COUNT	1
 
 #define CCP_DES3_KEY_SB_COUNT		1
@@ -200,6 +200,7 @@
 #define CCP_SHA_SB_COUNT		1
 
 #define CCP_RSA_MAX_WIDTH		4096
+#define CCP5_RSA_MAX_WIDTH		16384
 
 #define CCP_PASSTHRU_BLOCKSIZE		256
 #define CCP_PASSTHRU_MASKSIZE		32
@@ -344,12 +345,11 @@ struct ccp_device {
 	char rngname[MAX_CCP_NAME_LEN];
 
 	struct device *dev;
+	struct sp_device *sp;
 
 	/* Bus specific device information
 	 */
 	void *dev_specific;
-	int (*get_irq)(struct ccp_device *ccp);
-	void (*free_irq)(struct ccp_device *ccp);
 	unsigned int qim;
 	unsigned int irq;
 	bool use_tasklet;
@@ -362,7 +362,6 @@ struct ccp_device {
 	 *   them.
 	 */
 	struct mutex req_mutex ____cacheline_aligned;
-	void __iomem *io_map;
 	void __iomem *io_regs;
 
 	/* Master lists that all cmds are queued on. Because there can be
@@ -380,6 +379,7 @@ struct ccp_device {
 	 */
 	struct ccp_cmd_queue cmd_q[MAX_HW_QUEUES];
 	unsigned int cmd_q_count;
+	unsigned int max_q_count;
 
 	/* Support for the CCP True RNG
 	 */
@@ -469,6 +469,7 @@ struct ccp_sg_workarea {
 	unsigned int sg_used;
 
 	struct scatterlist *dma_sg;
+	struct scatterlist *dma_sg_head;
 	struct device *dma_dev;
 	unsigned int dma_count;
 	enum dma_data_direction dma_dir;
@@ -497,6 +498,7 @@ struct ccp_aes_op {
 };
 
 struct ccp_xts_aes_op {
+	enum ccp_aes_type type;
 	enum ccp_aes_action action;
 	enum ccp_xts_aes_unit_size unit_size;
 };
@@ -595,8 +597,8 @@ struct dword3 {
 };
 
 union dword4 {
-	__le32 dst_lo;		/* NON-SHA	*/
-	__le32 sha_len_lo;	/* SHA		*/
+	u32 dst_lo;		/* NON-SHA	*/
+	u32 sha_len_lo;		/* SHA		*/
 };
 
 union dword5 {
@@ -606,7 +608,7 @@ union dword5 {
 		unsigned int  rsvd1:13;
 		unsigned int  fixed:1;
 	} fields;
-	__le32 sha_len_hi;
+	u32 sha_len_hi;
 };
 
 struct dword7 {
@@ -617,27 +619,21 @@ struct dword7 {
 
 struct ccp5_desc {
 	struct dword0 dw0;
-	__le32 length;
-	__le32 src_lo;
+	u32 length;
+	u32 src_lo;
 	struct dword3 dw3;
 	union dword4 dw4;
 	union dword5 dw5;
-	__le32 key_lo;
+	u32 key_lo;
 	struct dword7 dw7;
 };
-
-int ccp_pci_init(void);
-void ccp_pci_exit(void);
-
-int ccp_platform_init(void);
-void ccp_platform_exit(void);
 
 void ccp_add_device(struct ccp_device *ccp);
 void ccp_del_device(struct ccp_device *ccp);
 
-extern void ccp_log_error(struct ccp_device *, int);
+extern void ccp_log_error(struct ccp_device *, unsigned int);
 
-struct ccp_device *ccp_alloc_struct(struct device *dev);
+struct ccp_device *ccp_alloc_struct(struct sp_device *sp);
 bool ccp_queues_suspended(struct ccp_device *ccp);
 int ccp_cmd_queue_thread(void *data);
 int ccp_trng_read(struct hwrng *rng, void *data, size_t max, bool wait);
@@ -669,16 +665,7 @@ struct ccp_actions {
 	irqreturn_t (*irqhandler)(int, void *);
 };
 
-/* Structure to hold CCP version-specific values */
-struct ccp_vdata {
-	const unsigned int version;
-	const unsigned int dma_chan_attr;
-	void (*setup)(struct ccp_device *);
-	const struct ccp_actions *perform;
-	const unsigned int bar;
-	const unsigned int offset;
-};
-
+extern const struct ccp_vdata ccpv3_platform;
 extern const struct ccp_vdata ccpv3;
 extern const struct ccp_vdata ccpv5a;
 extern const struct ccp_vdata ccpv5b;

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /*
  *  SR-IPv6 implementation
  *
@@ -33,18 +34,7 @@ struct seg6_iptunnel_encap {
 enum {
 	SEG6_IPTUN_MODE_INLINE,
 	SEG6_IPTUN_MODE_ENCAP,
+	SEG6_IPTUN_MODE_L2ENCAP,
 };
-
-#ifdef __KERNEL__
-
-static inline size_t seg6_lwt_headroom(struct seg6_iptunnel_encap *tuninfo)
-{
-	int encap = (tuninfo->mode == SEG6_IPTUN_MODE_ENCAP);
-
-	return ((tuninfo->srh->hdrlen + 1) << 3) +
-	       (encap * sizeof(struct ipv6hdr));
-}
-
-#endif
 
 #endif

@@ -7,6 +7,7 @@
  *
  * Copyright (C) 2016 Cavium Inc.
  */
+#include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/mmc/mmc.h>
@@ -75,8 +76,10 @@ static int thunder_mmc_probe(struct pci_dev *pdev,
 		return ret;
 
 	host->base = pcim_iomap(pdev, 0, pci_resource_len(pdev, 0));
-	if (!host->base)
-		return -EINVAL;
+	if (!host->base) {
+		ret = -EINVAL;
+		goto error;
+	}
 
 	/* On ThunderX these are identical */
 	host->dma_base = host->base;
@@ -85,12 +88,14 @@ static int thunder_mmc_probe(struct pci_dev *pdev,
 	host->reg_off_dma = 0x160;
 
 	host->clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(host->clk))
-		return PTR_ERR(host->clk);
+	if (IS_ERR(host->clk)) {
+		ret = PTR_ERR(host->clk);
+		goto error;
+	}
 
 	ret = clk_prepare_enable(host->clk);
 	if (ret)
-		return ret;
+		goto error;
 	host->sys_freq = clk_get_rate(host->clk);
 
 	spin_lock_init(&host->irq_handler_lock);
@@ -149,10 +154,14 @@ error:
 	for (i = 0; i < CAVIUM_MAX_MMC; i++) {
 		if (host->slot[i])
 			cvm_mmc_of_slot_remove(host->slot[i]);
-		if (host->slot_pdev[i])
+		if (host->slot_pdev[i]) {
+			get_device(&host->slot_pdev[i]->dev);
 			of_platform_device_destroy(&host->slot_pdev[i]->dev, NULL);
+			put_device(&host->slot_pdev[i]->dev);
+		}
 	}
 	clk_disable_unprepare(host->clk);
+	pci_release_regions(pdev);
 	return ret;
 }
 
@@ -171,6 +180,7 @@ static void thunder_mmc_remove(struct pci_dev *pdev)
 	writeq(dma_cfg, host->dma_base + MIO_EMM_DMA_CFG(host));
 
 	clk_disable_unprepare(host->clk);
+	pci_release_regions(pdev);
 }
 
 static const struct pci_device_id thunder_mmc_id_table[] = {

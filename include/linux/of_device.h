@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_OF_DEVICE_H
 #define _LINUX_OF_DEVICE_H
 
@@ -50,12 +51,19 @@ static inline struct device_node *of_cpu_device_node_get(int cpu)
 	struct device *cpu_dev;
 	cpu_dev = get_cpu_device(cpu);
 	if (!cpu_dev)
-		return NULL;
+		return of_get_cpu_node(cpu, NULL);
 	return of_node_get(cpu_dev->of_node);
 }
 
-int of_dma_configure(struct device *dev, struct device_node *np);
-void of_dma_deconfigure(struct device *dev);
+int of_dma_configure_id(struct device *dev,
+		     struct device_node *np,
+		     bool force_dma, const u32 *id);
+static inline int of_dma_configure(struct device *dev,
+				   struct device_node *np,
+				   bool force_dma)
+{
+	return of_dma_configure_id(dev, np, force_dma, NULL);
+}
 #else /* CONFIG_OF */
 
 static inline int of_driver_match_device(struct device *dev,
@@ -104,12 +112,18 @@ static inline struct device_node *of_cpu_device_node_get(int cpu)
 	return NULL;
 }
 
-static inline int of_dma_configure(struct device *dev, struct device_node *np)
+static inline int of_dma_configure_id(struct device *dev,
+				   struct device_node *np,
+				   bool force_dma)
 {
 	return 0;
 }
-static inline void of_dma_deconfigure(struct device *dev)
-{}
+static inline int of_dma_configure(struct device *dev,
+				   struct device_node *np,
+				   bool force_dma)
+{
+	return 0;
+}
 #endif /* CONFIG_OF */
 
 #endif /* _LINUX_OF_DEVICE_H */

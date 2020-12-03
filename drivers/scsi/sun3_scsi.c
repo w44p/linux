@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Sun3 SCSI stuff by Erik Verbruggen (erik@bigmama.xtdnet.nl)
  *
@@ -46,7 +47,7 @@
 #define NCR5380_write(reg, value)       out_8(hostdata->io + (reg), value)
 
 #define NCR5380_queue_command           sun3scsi_queue_command
-#define NCR5380_bus_reset               sun3scsi_bus_reset
+#define NCR5380_host_reset              sun3scsi_host_reset
 #define NCR5380_abort                   sun3scsi_abort
 #define NCR5380_info                    sun3scsi_info
 
@@ -396,10 +397,12 @@ static int sun3scsi_dma_finish(int write_flag)
 		case CSR_LEFT_3:
 			*vaddr = (dregs->bpack_lo & 0xff00) >> 8;
 			vaddr--;
+			fallthrough;
 
 		case CSR_LEFT_2:
 			*vaddr = (dregs->bpack_hi & 0x00ff);
 			vaddr--;
+			fallthrough;
 
 		case CSR_LEFT_1:
 			*vaddr = (dregs->bpack_hi & 0xff00) >> 8;
@@ -495,12 +498,12 @@ static struct scsi_host_template sun3_scsi_template = {
 	.info			= sun3scsi_info,
 	.queuecommand		= sun3scsi_queue_command,
 	.eh_abort_handler	= sun3scsi_abort,
-	.eh_bus_reset_handler	= sun3scsi_bus_reset,
+	.eh_host_reset_handler	= sun3scsi_host_reset,
 	.can_queue		= 16,
 	.this_id		= 7,
-	.sg_tablesize		= SG_NONE,
+	.sg_tablesize		= 1,
 	.cmd_per_lun		= 2,
-	.use_clustering		= DISABLE_CLUSTERING,
+	.dma_boundary		= PAGE_SIZE - 1,
 	.cmd_size		= NCR5380_CMD_SIZE,
 };
 
@@ -520,7 +523,7 @@ static int __init sun3_scsi_probe(struct platform_device *pdev)
 		sun3_scsi_template.can_queue = setup_can_queue;
 	if (setup_cmd_per_lun > 0)
 		sun3_scsi_template.cmd_per_lun = setup_cmd_per_lun;
-	if (setup_sg_tablesize >= 0)
+	if (setup_sg_tablesize > 0)
 		sun3_scsi_template.sg_tablesize = setup_sg_tablesize;
 	if (setup_hostid >= 0)
 		sun3_scsi_template.this_id = setup_hostid & 7;

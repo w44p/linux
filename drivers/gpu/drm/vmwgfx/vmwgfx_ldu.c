@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0 OR MIT
 /**************************************************************************
  *
- * Copyright © 2009-2015 VMware, Inc., Palo Alto, CA., USA
- * All Rights Reserved.
+ * Copyright 2009-2015 VMware, Inc., Palo Alto, CA., USA
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
@@ -25,11 +25,13 @@
  *
  **************************************************************************/
 
-#include "vmwgfx_kms.h"
-#include <drm/drm_plane_helper.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_fourcc.h>
+#include <drm/drm_plane_helper.h>
+#include <drm/drm_vblank.h>
 
+#include "vmwgfx_kms.h"
 
 #define vmw_crtc_to_ldu(x) \
 	container_of(x, struct vmw_legacy_display_unit, base.crtc)
@@ -79,7 +81,7 @@ static int vmw_ldu_commit_list(struct vmw_private *dev_priv)
 	struct vmw_legacy_display_unit *entry;
 	struct drm_framebuffer *fb = NULL;
 	struct drm_crtc *crtc = NULL;
-	int i = 0;
+	int i;
 
 	/* If there is no display topology the host just assumes
 	 * that the guest will set the same layout as the host.
@@ -90,12 +92,11 @@ static int vmw_ldu_commit_list(struct vmw_private *dev_priv)
 			crtc = &entry->base.crtc;
 			w = max(w, crtc->x + crtc->mode.hdisplay);
 			h = max(h, crtc->y + crtc->mode.vdisplay);
-			i++;
 		}
 
 		if (crtc == NULL)
 			return 0;
-		fb = entry->base.crtc.primary->state->fb;
+		fb = crtc->primary->state->fb;
 
 		return vmw_kms_write_svga(dev_priv, w, h, fb->pitches[0],
 					  fb->format->cpp[0] * 8,
@@ -203,19 +204,7 @@ static void vmw_ldu_crtc_mode_set_nofb(struct drm_crtc *crtc)
 }
 
 /**
- * vmw_ldu_crtc_helper_prepare - Noop
- *
- * @crtc: CRTC associated with the new screen
- *
- * Prepares the CRTC for a mode set, but we don't need to do anything here.
- *
- */
-static void vmw_ldu_crtc_helper_prepare(struct drm_crtc *crtc)
-{
-}
-
-/**
- * vmw_ldu_crtc_helper_commit - Noop
+ * vmw_ldu_crtc_atomic_enable - Noop
  *
  * @crtc: CRTC associated with the new screen
  *
@@ -224,16 +213,18 @@ static void vmw_ldu_crtc_helper_prepare(struct drm_crtc *crtc)
  * but since for LDU the display plane is closely tied to the
  * CRTC, it makes more sense to do those at plane update time.
  */
-static void vmw_ldu_crtc_helper_commit(struct drm_crtc *crtc)
+static void vmw_ldu_crtc_atomic_enable(struct drm_crtc *crtc,
+				       struct drm_crtc_state *old_state)
 {
 }
 
 /**
- * vmw_ldu_crtc_helper_disable - Turns off CRTC
+ * vmw_ldu_crtc_atomic_disable - Turns off CRTC
  *
  * @crtc: CRTC to be turned off
  */
-static void vmw_ldu_crtc_helper_disable(struct drm_crtc *crtc)
+static void vmw_ldu_crtc_atomic_disable(struct drm_crtc *crtc,
+					struct drm_crtc_state *old_state)
 {
 }
 
@@ -243,7 +234,10 @@ static const struct drm_crtc_funcs vmw_legacy_crtc_funcs = {
 	.reset = vmw_du_crtc_reset,
 	.atomic_duplicate_state = vmw_du_crtc_duplicate_state,
 	.atomic_destroy_state = vmw_du_crtc_destroy_state,
-	.set_config = vmw_kms_set_config,
+	.set_config = drm_atomic_helper_set_config,
+	.get_vblank_counter = vmw_get_vblank_counter,
+	.enable_vblank = vmw_enable_vblank,
+	.disable_vblank = vmw_disable_vblank,
 };
 
 
@@ -273,56 +267,19 @@ static const struct drm_connector_funcs vmw_legacy_connector_funcs = {
 	.dpms = vmw_du_connector_dpms,
 	.detect = vmw_du_connector_detect,
 	.fill_modes = vmw_du_connector_fill_modes,
-	.set_property = vmw_du_connector_set_property,
 	.destroy = vmw_ldu_connector_destroy,
 	.reset = vmw_du_connector_reset,
-	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
-	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
-	.atomic_set_property = vmw_du_connector_atomic_set_property,
-	.atomic_get_property = vmw_du_connector_atomic_get_property,
+	.atomic_duplicate_state = vmw_du_connector_duplicate_state,
+	.atomic_destroy_state = vmw_du_connector_destroy_state,
 };
 
 static const struct
 drm_connector_helper_funcs vmw_ldu_connector_helper_funcs = {
-	.best_encoder = drm_atomic_helper_best_encoder,
 };
 
 /*
  * Legacy Display Plane Functions
  */
-
-/**
- * vmw_ldu_primary_plane_cleanup_fb - Noop
- *
- * @plane:  display plane
- * @old_state: Contains the FB to clean up
- *
- * Unpins the display surface
- *
- * Returns 0 on success
- */
-static void
-vmw_ldu_primary_plane_cleanup_fb(struct drm_plane *plane,
-				 struct drm_plane_state *old_state)
-{
-}
-
-
-/**
- * vmw_ldu_primary_plane_prepare_fb - Noop
- *
- * @plane:  display plane
- * @new_state: info on the new plane state, including the FB
- *
- * Returns 0 on success
- */
-static int
-vmw_ldu_primary_plane_prepare_fb(struct drm_plane *plane,
-				 struct drm_plane_state *new_state)
-{
-	return 0;
-}
-
 
 static void
 vmw_ldu_primary_plane_atomic_update(struct drm_plane *plane,
@@ -383,18 +340,15 @@ static const struct
 drm_plane_helper_funcs vmw_ldu_primary_plane_helper_funcs = {
 	.atomic_check = vmw_du_primary_plane_atomic_check,
 	.atomic_update = vmw_ldu_primary_plane_atomic_update,
-	.prepare_fb = vmw_ldu_primary_plane_prepare_fb,
-	.cleanup_fb = vmw_ldu_primary_plane_cleanup_fb,
 };
 
 static const struct drm_crtc_helper_funcs vmw_ldu_crtc_helper_funcs = {
-	.prepare = vmw_ldu_crtc_helper_prepare,
-	.commit = vmw_ldu_crtc_helper_commit,
-	.disable = vmw_ldu_crtc_helper_disable,
 	.mode_set_nofb = vmw_ldu_crtc_mode_set_nofb,
 	.atomic_check = vmw_du_crtc_atomic_check,
 	.atomic_begin = vmw_du_crtc_atomic_begin,
 	.atomic_flush = vmw_du_crtc_atomic_flush,
+	.atomic_enable = vmw_ldu_crtc_atomic_enable,
+	.atomic_disable = vmw_ldu_crtc_atomic_disable,
 };
 
 
@@ -433,13 +387,11 @@ static int vmw_ldu_init(struct vmw_private *dev_priv, unsigned unit)
 	ldu->base.is_implicit = true;
 
 	/* Initialize primary plane */
-	vmw_du_plane_reset(primary);
-
 	ret = drm_universal_plane_init(dev, &ldu->base.primary,
 				       0, &vmw_ldu_plane_funcs,
 				       vmw_primary_plane_formats,
 				       ARRAY_SIZE(vmw_primary_plane_formats),
-				       DRM_PLANE_TYPE_PRIMARY, NULL);
+				       NULL, DRM_PLANE_TYPE_PRIMARY, NULL);
 	if (ret) {
 		DRM_ERROR("Failed to initialize primary plane");
 		goto err_free;
@@ -448,13 +400,11 @@ static int vmw_ldu_init(struct vmw_private *dev_priv, unsigned unit)
 	drm_plane_helper_add(primary, &vmw_ldu_primary_plane_helper_funcs);
 
 	/* Initialize cursor plane */
-	vmw_du_plane_reset(cursor);
-
 	ret = drm_universal_plane_init(dev, &ldu->base.cursor,
 			0, &vmw_ldu_cursor_funcs,
 			vmw_cursor_plane_formats,
 			ARRAY_SIZE(vmw_cursor_plane_formats),
-			DRM_PLANE_TYPE_CURSOR, NULL);
+			NULL, DRM_PLANE_TYPE_CURSOR, NULL);
 	if (ret) {
 		DRM_ERROR("Failed to initialize cursor plane");
 		drm_plane_cleanup(&ldu->base.primary);
@@ -463,8 +413,6 @@ static int vmw_ldu_init(struct vmw_private *dev_priv, unsigned unit)
 
 	drm_plane_helper_add(cursor, &vmw_ldu_cursor_plane_helper_funcs);
 
-
-	vmw_du_connector_reset(connector);
 	ret = drm_connector_init(dev, connector, &vmw_legacy_connector_funcs,
 				 DRM_MODE_CONNECTOR_VIRTUAL);
 	if (ret) {
@@ -474,8 +422,6 @@ static int vmw_ldu_init(struct vmw_private *dev_priv, unsigned unit)
 
 	drm_connector_helper_add(connector, &vmw_ldu_connector_helper_funcs);
 	connector->status = vmw_du_connector_detect(connector, true);
-	vmw_connector_state_to_vcs(connector->state)->is_implicit = true;
-
 
 	ret = drm_encoder_init(dev, encoder, &vmw_legacy_encoder_funcs,
 			       DRM_MODE_ENCODER_VIRTUAL, NULL);
@@ -484,7 +430,7 @@ static int vmw_ldu_init(struct vmw_private *dev_priv, unsigned unit)
 		goto err_free_connector;
 	}
 
-	(void) drm_mode_connector_attach_encoder(connector, encoder);
+	(void) drm_connector_attach_encoder(connector, encoder);
 	encoder->possible_crtcs = (1 << unit);
 	encoder->possible_clones = 0;
 
@@ -494,8 +440,6 @@ static int vmw_ldu_init(struct vmw_private *dev_priv, unsigned unit)
 		goto err_free_encoder;
 	}
 
-
-	vmw_du_crtc_reset(crtc);
 	ret = drm_crtc_init_with_planes(dev, crtc, &ldu->base.primary,
 					&ldu->base.cursor,
 					&vmw_legacy_crtc_funcs, NULL);
@@ -560,7 +504,7 @@ int vmw_kms_ldu_init_display(struct vmw_private *dev_priv)
 	if (ret != 0)
 		goto err_free;
 
-	vmw_kms_create_implicit_placement_property(dev_priv, true);
+	vmw_kms_create_implicit_placement_property(dev_priv);
 
 	if (dev_priv->capabilities & SVGA_CAP_MULTIMON)
 		for (i = 0; i < VMWGFX_NUM_DISPLAY_UNITS; ++i)
@@ -569,6 +513,8 @@ int vmw_kms_ldu_init_display(struct vmw_private *dev_priv)
 		vmw_ldu_init(dev_priv, 0);
 
 	dev_priv->active_display_unit = vmw_du_legacy;
+
+	drm_mode_config_reset(dev);
 
 	DRM_INFO("Legacy Display Unit initialized\n");
 
@@ -582,12 +528,8 @@ err_free:
 
 int vmw_kms_ldu_close_display(struct vmw_private *dev_priv)
 {
-	struct drm_device *dev = dev_priv->dev;
-
 	if (!dev_priv->ldu_priv)
 		return -ENOSYS;
-
-	drm_vblank_cleanup(dev);
 
 	BUG_ON(!list_empty(&dev_priv->ldu_priv->active));
 
@@ -597,11 +539,11 @@ int vmw_kms_ldu_close_display(struct vmw_private *dev_priv)
 }
 
 
-int vmw_kms_ldu_do_dmabuf_dirty(struct vmw_private *dev_priv,
-				struct vmw_framebuffer *framebuffer,
-				unsigned flags, unsigned color,
-				struct drm_clip_rect *clips,
-				unsigned num_clips, int increment)
+int vmw_kms_ldu_do_bo_dirty(struct vmw_private *dev_priv,
+			    struct vmw_framebuffer *framebuffer,
+			    unsigned int flags, unsigned int color,
+			    struct drm_clip_rect *clips,
+			    unsigned int num_clips, int increment)
 {
 	size_t fifo_size;
 	int i;
@@ -612,11 +554,9 @@ int vmw_kms_ldu_do_dmabuf_dirty(struct vmw_private *dev_priv,
 	} *cmd;
 
 	fifo_size = sizeof(*cmd) * num_clips;
-	cmd = vmw_fifo_reserve(dev_priv, fifo_size);
-	if (unlikely(cmd == NULL)) {
-		DRM_ERROR("Fifo reserve failed.\n");
+	cmd = VMW_FIFO_RESERVE(dev_priv, fifo_size);
+	if (unlikely(cmd == NULL))
 		return -ENOMEM;
-	}
 
 	memset(cmd, 0, fifo_size);
 	for (i = 0; i < num_clips; i++, clips += increment) {

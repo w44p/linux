@@ -1,27 +1,23 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for Atmel AC97C
  *
  * Copyright (C) 2005-2009 Atmel Corporation
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  */
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/bitmap.h>
 #include <linux/device.h>
 #include <linux/atmel_pdc.h>
+#include <linux/gpio/consumer.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/mutex.h>
-#include <linux/gpio.h>
 #include <linux/types.h>
 #include <linux/io.h>
 #include <linux/of.h>
-#include <linux/of_gpio.h>
 #include <linux/of_device.h>
 
 #include <sound/core.h>
@@ -29,7 +25,6 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/ac97_codec.h>
-#include <sound/atmel-ac97c.h>
 #include <sound/memalloc.h>
 
 #include "ac97c.h"
@@ -56,7 +51,7 @@ struct atmel_ac97c {
 	void __iomem			*regs;
 	int				irq;
 	int				opened;
-	int				reset_pin;
+	struct gpio_desc		*reset_pin;
 };
 
 #define get_chip(card) ((struct atmel_ac97c *)(card)->private_data)
@@ -66,7 +61,7 @@ struct atmel_ac97c {
 #define ac97c_readl(chip, reg)				\
 	__raw_readl((chip)->regs + AC97C_##reg)
 
-static struct snd_pcm_hardware atmel_ac97c_hw = {
+static const struct snd_pcm_hardware atmel_ac97c_hw = {
 	.info			= (SNDRV_PCM_INFO_MMAP
 				  | SNDRV_PCM_INFO_MMAP_VALID
 				  | SNDRV_PCM_INFO_INTERLEAVED
@@ -164,12 +159,6 @@ static int atmel_ac97c_playback_hw_params(struct snd_pcm_substream *substream,
 		struct snd_pcm_hw_params *hw_params)
 {
 	struct atmel_ac97c *chip = snd_pcm_substream_chip(substream);
-	int retval;
-
-	retval = snd_pcm_lib_malloc_pages(substream,
-					params_buffer_bytes(hw_params));
-	if (retval < 0)
-		return retval;
 
 	/* Set restrictions to params. */
 	mutex_lock(&opened_mutex);
@@ -177,19 +166,13 @@ static int atmel_ac97c_playback_hw_params(struct snd_pcm_substream *substream,
 	chip->cur_format = params_format(hw_params);
 	mutex_unlock(&opened_mutex);
 
-	return retval;
+	return 0;
 }
 
 static int atmel_ac97c_capture_hw_params(struct snd_pcm_substream *substream,
 		struct snd_pcm_hw_params *hw_params)
 {
 	struct atmel_ac97c *chip = snd_pcm_substream_chip(substream);
-	int retval;
-
-	retval = snd_pcm_lib_malloc_pages(substream,
-					params_buffer_bytes(hw_params));
-	if (retval < 0)
-		return retval;
 
 	/* Set restrictions to params. */
 	mutex_lock(&opened_mutex);
@@ -197,7 +180,7 @@ static int atmel_ac97c_capture_hw_params(struct snd_pcm_substream *substream,
 	chip->cur_format = params_format(hw_params);
 	mutex_unlock(&opened_mutex);
 
-	return retval;
+	return 0;
 }
 
 static int atmel_ac97c_playback_prepare(struct snd_pcm_substream *substream)
@@ -236,7 +219,7 @@ static int atmel_ac97c_playback_prepare(struct snd_pcm_substream *substream)
 	switch (runtime->format) {
 	case SNDRV_PCM_FORMAT_S16_LE:
 		break;
-	case SNDRV_PCM_FORMAT_S16_BE: /* fall through */
+	case SNDRV_PCM_FORMAT_S16_BE:
 		word &= ~(AC97C_CMR_CEM_LITTLE);
 		break;
 	default:
@@ -318,7 +301,7 @@ static int atmel_ac97c_capture_prepare(struct snd_pcm_substream *substream)
 	switch (runtime->format) {
 	case SNDRV_PCM_FORMAT_S16_LE:
 		break;
-	case SNDRV_PCM_FORMAT_S16_BE: /* fall through */
+	case SNDRV_PCM_FORMAT_S16_BE:
 		word &= ~(AC97C_CMR_CEM_LITTLE);
 		break;
 	default:
@@ -373,14 +356,14 @@ atmel_ac97c_playback_trigger(struct snd_pcm_substream *substream, int cmd)
 	camr = ac97c_readl(chip, CAMR);
 
 	switch (cmd) {
-	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE: /* fall through */
-	case SNDRV_PCM_TRIGGER_RESUME: /* fall through */
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_START:
 		ptcr = ATMEL_PDC_TXTEN;
 		camr |= AC97C_CMR_CENA | AC97C_CSR_ENDTX;
 		break;
-	case SNDRV_PCM_TRIGGER_PAUSE_PUSH: /* fall through */
-	case SNDRV_PCM_TRIGGER_SUSPEND: /* fall through */
+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_STOP:
 		ptcr |= ATMEL_PDC_TXTDIS;
 		if (chip->opened <= 1)
@@ -405,14 +388,14 @@ atmel_ac97c_capture_trigger(struct snd_pcm_substream *substream, int cmd)
 	ptcr = readl(chip->regs + ATMEL_PDC_PTSR);
 
 	switch (cmd) {
-	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE: /* fall through */
-	case SNDRV_PCM_TRIGGER_RESUME: /* fall through */
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_START:
 		ptcr = ATMEL_PDC_RXTEN;
 		camr |= AC97C_CMR_CENA | AC97C_CSR_ENDRX;
 		break;
-	case SNDRV_PCM_TRIGGER_PAUSE_PUSH: /* fall through */
-	case SNDRV_PCM_TRIGGER_SUSPEND: /* fall through */
+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_STOP:
 		ptcr |= ATMEL_PDC_RXTDIS;
 		if (chip->opened <= 1)
@@ -461,23 +444,19 @@ atmel_ac97c_capture_pointer(struct snd_pcm_substream *substream)
 	return frames;
 }
 
-static struct snd_pcm_ops atmel_ac97_playback_ops = {
+static const struct snd_pcm_ops atmel_ac97_playback_ops = {
 	.open		= atmel_ac97c_playback_open,
 	.close		= atmel_ac97c_playback_close,
-	.ioctl		= snd_pcm_lib_ioctl,
 	.hw_params	= atmel_ac97c_playback_hw_params,
-	.hw_free	= snd_pcm_lib_free_pages,
 	.prepare	= atmel_ac97c_playback_prepare,
 	.trigger	= atmel_ac97c_playback_trigger,
 	.pointer	= atmel_ac97c_playback_pointer,
 };
 
-static struct snd_pcm_ops atmel_ac97_capture_ops = {
+static const struct snd_pcm_ops atmel_ac97_capture_ops = {
 	.open		= atmel_ac97c_capture_open,
 	.close		= atmel_ac97c_capture_close,
-	.ioctl		= snd_pcm_lib_ioctl,
 	.hw_params	= atmel_ac97c_capture_hw_params,
-	.hw_free	= snd_pcm_lib_free_pages,
 	.prepare	= atmel_ac97c_capture_prepare,
 	.trigger	= atmel_ac97c_capture_trigger,
 	.pointer	= atmel_ac97c_capture_pointer,
@@ -496,12 +475,12 @@ static irqreturn_t atmel_ac97c_interrupt(int irq, void *dev)
 		struct snd_pcm_runtime *runtime;
 		int offset, next_period, block_size;
 		dev_dbg(&chip->pdev->dev, "channel A event%s%s%s%s%s%s\n",
-				casr & AC97C_CSR_OVRUN   ? " OVRUN"   : "",
-				casr & AC97C_CSR_RXRDY   ? " RXRDY"   : "",
-				casr & AC97C_CSR_UNRUN   ? " UNRUN"   : "",
-				casr & AC97C_CSR_TXEMPTY ? " TXEMPTY" : "",
-				casr & AC97C_CSR_TXRDY   ? " TXRDY"   : "",
-				!casr                    ? " NONE"    : "");
+			(casr & AC97C_CSR_OVRUN)   ? " OVRUN"   : "",
+			(casr & AC97C_CSR_RXRDY)   ? " RXRDY"   : "",
+			(casr & AC97C_CSR_UNRUN)   ? " UNRUN"   : "",
+			(casr & AC97C_CSR_TXEMPTY) ? " TXEMPTY" : "",
+			(casr & AC97C_CSR_TXRDY)   ? " TXRDY"   : "",
+			!casr                      ? " NONE"    : "");
 		if ((casr & camr) & AC97C_CSR_ENDTX) {
 			runtime = chip->playback_substream->runtime;
 			block_size = frames_to_bytes(runtime, runtime->period_size);
@@ -542,11 +521,11 @@ static irqreturn_t atmel_ac97c_interrupt(int irq, void *dev)
 
 	if (sr & AC97C_SR_COEVT) {
 		dev_info(&chip->pdev->dev, "codec channel event%s%s%s%s%s\n",
-				cosr & AC97C_CSR_OVRUN   ? " OVRUN"   : "",
-				cosr & AC97C_CSR_RXRDY   ? " RXRDY"   : "",
-				cosr & AC97C_CSR_TXEMPTY ? " TXEMPTY" : "",
-				cosr & AC97C_CSR_TXRDY   ? " TXRDY"   : "",
-				!cosr                    ? " NONE"    : "");
+			 (cosr & AC97C_CSR_OVRUN)   ? " OVRUN"   : "",
+			 (cosr & AC97C_CSR_RXRDY)   ? " RXRDY"   : "",
+			 (cosr & AC97C_CSR_TXEMPTY) ? " TXEMPTY" : "",
+			 (cosr & AC97C_CSR_TXRDY)   ? " TXRDY"   : "",
+			 !cosr                      ? " NONE"    : "");
 		retval = IRQ_HANDLED;
 	}
 
@@ -558,7 +537,7 @@ static irqreturn_t atmel_ac97c_interrupt(int irq, void *dev)
 	return retval;
 }
 
-static struct ac97_pcm at91_ac97_pcm_defs[] = {
+static const struct ac97_pcm at91_ac97_pcm_defs[] = {
 	/* Playback */
 	{
 		.exclusive = 1,
@@ -605,11 +584,9 @@ static int atmel_ac97c_pcm_new(struct atmel_ac97c *chip)
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &atmel_ac97_capture_ops);
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &atmel_ac97_playback_ops);
 
-	retval = snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV,
+	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV,
 			&chip->pdev->dev, hw.periods_min * hw.period_bytes_min,
 			hw.buffer_bytes_max);
-	if (retval)
-		return retval;
 
 	pcm->private_data = chip;
 	pcm->info_flags = 0;
@@ -700,11 +677,11 @@ static void atmel_ac97c_reset(struct atmel_ac97c *chip)
 	ac97c_writel(chip, CAMR, 0);
 	ac97c_writel(chip, COMR, 0);
 
-	if (gpio_is_valid(chip->reset_pin)) {
-		gpio_set_value(chip->reset_pin, 0);
+	if (!IS_ERR(chip->reset_pin)) {
+		gpiod_set_value(chip->reset_pin, 0);
 		/* AC97 v2.2 specifications says minimum 1 us. */
 		udelay(2);
-		gpio_set_value(chip->reset_pin, 1);
+		gpiod_set_value(chip->reset_pin, 1);
 	} else {
 		ac97c_writel(chip, MR, AC97C_MR_WRST | AC97C_MR_ENA);
 		udelay(2);
@@ -712,47 +689,20 @@ static void atmel_ac97c_reset(struct atmel_ac97c *chip)
 	}
 }
 
-#ifdef CONFIG_OF
 static const struct of_device_id atmel_ac97c_dt_ids[] = {
 	{ .compatible = "atmel,at91sam9263-ac97c", },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, atmel_ac97c_dt_ids);
 
-static struct ac97c_platform_data *atmel_ac97c_probe_dt(struct device *dev)
-{
-	struct ac97c_platform_data *pdata;
-	struct device_node *node = dev->of_node;
-
-	if (!node) {
-		dev_err(dev, "Device does not have associated DT data\n");
-		return ERR_PTR(-EINVAL);
-	}
-
-	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
-	if (!pdata)
-		return ERR_PTR(-ENOMEM);
-
-	pdata->reset_pin = of_get_named_gpio(dev->of_node, "ac97-gpios", 2);
-
-	return pdata;
-}
-#else
-static struct ac97c_platform_data *atmel_ac97c_probe_dt(struct device *dev)
-{
-	dev_err(dev, "no platform data defined\n");
-	return ERR_PTR(-ENXIO);
-}
-#endif
-
 static int atmel_ac97c_probe(struct platform_device *pdev)
 {
+	struct device			*dev = &pdev->dev;
 	struct snd_card			*card;
 	struct atmel_ac97c		*chip;
 	struct resource			*regs;
-	struct ac97c_platform_data	*pdata;
 	struct clk			*pclk;
-	static struct snd_ac97_bus_ops	ops = {
+	static const struct snd_ac97_bus_ops	ops = {
 		.write	= atmel_ac97c_write,
 		.read	= atmel_ac97c_read,
 	};
@@ -763,13 +713,6 @@ static int atmel_ac97c_probe(struct platform_device *pdev)
 	if (!regs) {
 		dev_dbg(&pdev->dev, "no memory resource\n");
 		return -ENXIO;
-	}
-
-	pdata = dev_get_platdata(&pdev->dev);
-	if (!pdata) {
-		pdata = atmel_ac97c_probe_dt(&pdev->dev);
-		if (IS_ERR(pdata))
-			return PTR_ERR(pdata);
 	}
 
 	irq = platform_get_irq(pdev, 0);
@@ -783,7 +726,9 @@ static int atmel_ac97c_probe(struct platform_device *pdev)
 		dev_dbg(&pdev->dev, "no peripheral clock\n");
 		return PTR_ERR(pclk);
 	}
-	clk_prepare_enable(pclk);
+	retval = clk_prepare_enable(pclk);
+	if (retval)
+		goto err_prepare_enable;
 
 	retval = snd_card_new(&pdev->dev, SNDRV_DEFAULT_IDX1,
 			      SNDRV_DEFAULT_STR1, THIS_MODULE,
@@ -819,17 +764,9 @@ static int atmel_ac97c_probe(struct platform_device *pdev)
 		goto err_ioremap;
 	}
 
-	if (gpio_is_valid(pdata->reset_pin)) {
-		if (gpio_request(pdata->reset_pin, "reset_pin")) {
-			dev_dbg(&pdev->dev, "reset pin not available\n");
-			chip->reset_pin = -ENODEV;
-		} else {
-			gpio_direction_output(pdata->reset_pin, 1);
-			chip->reset_pin = pdata->reset_pin;
-		}
-	} else {
-		chip->reset_pin = -EINVAL;
-	}
+	chip->reset_pin = devm_gpiod_get_index(dev, "ac97", 2, GPIOD_OUT_HIGH);
+	if (IS_ERR(chip->reset_pin))
+		dev_dbg(dev, "reset pin not available\n");
 
 	atmel_ac97c_reset(chip);
 
@@ -869,9 +806,6 @@ static int atmel_ac97c_probe(struct platform_device *pdev)
 	return 0;
 
 err_ac97_bus:
-	if (gpio_is_valid(chip->reset_pin))
-		gpio_free(chip->reset_pin);
-
 	iounmap(chip->regs);
 err_ioremap:
 	free_irq(irq, chip);
@@ -879,6 +813,7 @@ err_request_irq:
 	snd_card_free(card);
 err_snd_card_new:
 	clk_disable_unprepare(pclk);
+err_prepare_enable:
 	clk_put(pclk);
 	return retval;
 }
@@ -897,9 +832,9 @@ static int atmel_ac97c_resume(struct device *pdev)
 {
 	struct snd_card *card = dev_get_drvdata(pdev);
 	struct atmel_ac97c *chip = card->private_data;
+	int ret = clk_prepare_enable(chip->pclk);
 
-	clk_prepare_enable(chip->pclk);
-	return 0;
+	return ret;
 }
 
 static SIMPLE_DEV_PM_OPS(atmel_ac97c_pm, atmel_ac97c_suspend, atmel_ac97c_resume);
@@ -912,9 +847,6 @@ static int atmel_ac97c_remove(struct platform_device *pdev)
 {
 	struct snd_card *card = platform_get_drvdata(pdev);
 	struct atmel_ac97c *chip = get_chip(card);
-
-	if (gpio_is_valid(chip->reset_pin))
-		gpio_free(chip->reset_pin);
 
 	ac97c_writel(chip, CAMR, 0);
 	ac97c_writel(chip, COMR, 0);
@@ -936,7 +868,7 @@ static struct platform_driver atmel_ac97c_driver = {
 	.driver		= {
 		.name	= "atmel_ac97c",
 		.pm	= ATMEL_AC97C_PM_OPS,
-		.of_match_table = of_match_ptr(atmel_ac97c_dt_ids),
+		.of_match_table = atmel_ac97c_dt_ids,
 	},
 };
 module_platform_driver(atmel_ac97c_driver);

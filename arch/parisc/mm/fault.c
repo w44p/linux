@@ -17,6 +17,8 @@
 #include <linux/interrupt.h>
 #include <linux/extable.h>
 #include <linux/uaccess.h>
+#include <linux/hugetlb.h>
+#include <linux/perf_event.h>
 
 #include <asm/traps.h>
 
@@ -65,6 +67,7 @@ parisc_acctyp(unsigned long code, unsigned int inst)
 	case 0x30000000: /* coproc2 */
 		if (bit22set(inst))
 			return VM_WRITE;
+		fallthrough;
 
 	case 0x0: /* indexed/memory management */
 		if (bit22set(inst)) {
@@ -261,7 +264,7 @@ void do_page_fault(struct pt_regs *regs, unsigned long code,
 	struct task_struct *tsk;
 	struct mm_struct *mm;
 	unsigned long acc_type;
-	int fault;
+	vm_fault_t fault = 0;
 	unsigned int flags;
 
 	if (faulthandler_disabled())
@@ -272,15 +275,16 @@ void do_page_fault(struct pt_regs *regs, unsigned long code,
 	if (!mm)
 		goto no_context;
 
-	flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+	flags = FAULT_FLAG_DEFAULT;
 	if (user_mode(regs))
 		flags |= FAULT_FLAG_USER;
 
 	acc_type = parisc_acctyp(code, regs->iir);
 	if (acc_type & VM_WRITE)
 		flags |= FAULT_FLAG_WRITE;
+	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
 retry:
-	down_read(&mm->mmap_sem);
+	mmap_read_lock(mm);
 	vma = find_vma_prev(mm, address, &prev_vma);
 	if (!vma || address < vma->vm_start)
 		goto check_expansion;
@@ -300,9 +304,9 @@ good_area:
 	 * fault.
 	 */
 
-	fault = handle_mm_fault(vma, address, flags);
+	fault = handle_mm_fault(vma, address, flags, regs);
 
-	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
+	if (fault_signal_pending(fault, regs))
 		return;
 
 	if (unlikely(fault & VM_FAULT_ERROR)) {
@@ -315,28 +319,23 @@ good_area:
 			goto out_of_memory;
 		else if (fault & VM_FAULT_SIGSEGV)
 			goto bad_area;
-		else if (fault & VM_FAULT_SIGBUS)
+		else if (fault & (VM_FAULT_SIGBUS|VM_FAULT_HWPOISON|
+				  VM_FAULT_HWPOISON_LARGE))
 			goto bad_area;
 		BUG();
 	}
 	if (flags & FAULT_FLAG_ALLOW_RETRY) {
-		if (fault & VM_FAULT_MAJOR)
-			current->maj_flt++;
-		else
-			current->min_flt++;
 		if (fault & VM_FAULT_RETRY) {
-			flags &= ~FAULT_FLAG_ALLOW_RETRY;
-
 			/*
-			 * No need to up_read(&mm->mmap_sem) as we would
+			 * No need to mmap_read_unlock(mm) as we would
 			 * have already released it in __lock_page_or_retry
 			 * in mm/filemap.c.
 			 */
-
+			flags |= FAULT_FLAG_TRIED;
 			goto retry;
 		}
 	}
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 	return;
 
 check_expansion:
@@ -348,47 +347,66 @@ check_expansion:
  * Something tried to access memory that isn't in our memory map..
  */
 bad_area:
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 
 	if (user_mode(regs)) {
-		struct siginfo si;
-
-		show_signal_msg(regs, code, address, tsk, vma);
+		int signo, si_code;
 
 		switch (code) {
 		case 15:	/* Data TLB miss fault/Data page fault */
 			/* send SIGSEGV when outside of vma */
 			if (!vma ||
 			    address < vma->vm_start || address >= vma->vm_end) {
-				si.si_signo = SIGSEGV;
-				si.si_code = SEGV_MAPERR;
+				signo = SIGSEGV;
+				si_code = SEGV_MAPERR;
 				break;
 			}
 
 			/* send SIGSEGV for wrong permissions */
 			if ((vma->vm_flags & acc_type) != acc_type) {
-				si.si_signo = SIGSEGV;
-				si.si_code = SEGV_ACCERR;
+				signo = SIGSEGV;
+				si_code = SEGV_ACCERR;
 				break;
 			}
 
 			/* probably address is outside of mapped file */
-			/* fall through */
+			fallthrough;
 		case 17:	/* NA data TLB miss / page fault */
 		case 18:	/* Unaligned access - PCXS only */
-			si.si_signo = SIGBUS;
-			si.si_code = (code == 18) ? BUS_ADRALN : BUS_ADRERR;
+			signo = SIGBUS;
+			si_code = (code == 18) ? BUS_ADRALN : BUS_ADRERR;
 			break;
 		case 16:	/* Non-access instruction TLB miss fault */
 		case 26:	/* PCXL: Data memory access rights trap */
 		default:
-			si.si_signo = SIGSEGV;
-			si.si_code = (code == 26) ? SEGV_ACCERR : SEGV_MAPERR;
+			signo = SIGSEGV;
+			si_code = (code == 26) ? SEGV_ACCERR : SEGV_MAPERR;
 			break;
 		}
-		si.si_errno = 0;
-		si.si_addr = (void __user *) address;
-		force_sig_info(si.si_signo, &si, current);
+#ifdef CONFIG_MEMORY_FAILURE
+		if (fault & (VM_FAULT_HWPOISON|VM_FAULT_HWPOISON_LARGE)) {
+			unsigned int lsb = 0;
+			printk(KERN_ERR
+	"MCE: Killing %s:%d due to hardware memory corruption fault at %08lx\n",
+			tsk->comm, tsk->pid, address);
+			/*
+			 * Either small page or large page may be poisoned.
+			 * In other words, VM_FAULT_HWPOISON_LARGE and
+			 * VM_FAULT_HWPOISON are mutually exclusive.
+			 */
+			if (fault & VM_FAULT_HWPOISON_LARGE)
+				lsb = hstate_index_to_shift(VM_FAULT_GET_HINDEX(fault));
+			else if (fault & VM_FAULT_HWPOISON)
+				lsb = PAGE_SHIFT;
+
+			force_sig_mceerr(BUS_MCEERR_AR, (void __user *) address,
+					 lsb);
+			return;
+		}
+#endif
+		show_signal_msg(regs, code, address, tsk, vma);
+
+		force_sig_fault(signo, si_code, (void __user *) address);
 		return;
 	}
 
@@ -401,7 +419,7 @@ no_context:
 	parisc_terminate("Bad Address (null pointer deref?)", regs, code, address);
 
   out_of_memory:
-	up_read(&mm->mmap_sem);
+	mmap_read_unlock(mm);
 	if (!user_mode(regs))
 		goto no_context;
 	pagefault_out_of_memory();

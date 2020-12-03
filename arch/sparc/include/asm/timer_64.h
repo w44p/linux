@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* timer.h: System timer definitions for sun5.
  *
  * Copyright (C) 1997, 2008 David S. Miller (davem@davemloft.net)
@@ -6,6 +7,7 @@
 #ifndef _SPARC64_TIMER_H
 #define _SPARC64_TIMER_H
 
+#include <uapi/asm/asi.h>
 #include <linux/types.h>
 #include <linux/init.h>
 

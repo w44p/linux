@@ -39,10 +39,11 @@ static void mlx5i_get_drvinfo(struct net_device *dev,
 	struct mlx5e_priv *priv = mlx5i_epriv(dev);
 
 	mlx5e_ethtool_get_drvinfo(priv, drvinfo);
+	strlcpy(drvinfo->driver, DRIVER_NAME "[ib_ipoib]",
+		sizeof(drvinfo->driver));
 }
 
-static void mlx5i_get_strings(struct net_device *dev,
-			      uint32_t stringset, uint8_t *data)
+static void mlx5i_get_strings(struct net_device *dev, u32 stringset, u8 *data)
 {
 	struct mlx5e_priv *priv  = mlx5i_epriv(dev);
 
@@ -129,17 +130,109 @@ static int mlx5i_flash_device(struct net_device *netdev,
 	return mlx5e_ethtool_flash_device(priv, flash);
 }
 
+static inline int mlx5_ptys_width_enum_to_int(enum mlx5_ptys_width width)
+{
+	switch (width) {
+	case MLX5_PTYS_WIDTH_1X:  return  1;
+	case MLX5_PTYS_WIDTH_2X:  return  2;
+	case MLX5_PTYS_WIDTH_4X:  return  4;
+	case MLX5_PTYS_WIDTH_8X:  return  8;
+	case MLX5_PTYS_WIDTH_12X: return 12;
+	default:		  return -1;
+	}
+}
+
+enum mlx5_ptys_rate {
+	MLX5_PTYS_RATE_SDR	= 1 << 0,
+	MLX5_PTYS_RATE_DDR	= 1 << 1,
+	MLX5_PTYS_RATE_QDR	= 1 << 2,
+	MLX5_PTYS_RATE_FDR10	= 1 << 3,
+	MLX5_PTYS_RATE_FDR	= 1 << 4,
+	MLX5_PTYS_RATE_EDR	= 1 << 5,
+	MLX5_PTYS_RATE_HDR	= 1 << 6,
+};
+
+static inline int mlx5_ptys_rate_enum_to_int(enum mlx5_ptys_rate rate)
+{
+	switch (rate) {
+	case MLX5_PTYS_RATE_SDR:   return 2500;
+	case MLX5_PTYS_RATE_DDR:   return 5000;
+	case MLX5_PTYS_RATE_QDR:
+	case MLX5_PTYS_RATE_FDR10: return 10000;
+	case MLX5_PTYS_RATE_FDR:   return 14000;
+	case MLX5_PTYS_RATE_EDR:   return 25000;
+	case MLX5_PTYS_RATE_HDR:   return 50000;
+	default:		   return -1;
+	}
+}
+
+static int mlx5i_get_speed_settings(u16 ib_link_width_oper, u16 ib_proto_oper)
+{
+	int rate, width;
+
+	rate = mlx5_ptys_rate_enum_to_int(ib_proto_oper);
+	if (rate < 0)
+		return -EINVAL;
+	width = mlx5_ptys_width_enum_to_int(ib_link_width_oper);
+	if (width < 0)
+		return -EINVAL;
+
+	return rate * width;
+}
+
+static int mlx5i_get_link_ksettings(struct net_device *netdev,
+				    struct ethtool_link_ksettings *link_ksettings)
+{
+	struct mlx5e_priv *priv = mlx5i_epriv(netdev);
+	struct mlx5_core_dev *mdev = priv->mdev;
+	u16 ib_link_width_oper;
+	u16 ib_proto_oper;
+	int speed, ret;
+
+	ret = mlx5_query_ib_port_oper(mdev, &ib_link_width_oper, &ib_proto_oper,
+				      1);
+	if (ret)
+		return ret;
+
+	ethtool_link_ksettings_zero_link_mode(link_ksettings, supported);
+	ethtool_link_ksettings_zero_link_mode(link_ksettings, advertising);
+
+	speed = mlx5i_get_speed_settings(ib_link_width_oper, ib_proto_oper);
+	if (speed < 0)
+		return -EINVAL;
+
+	link_ksettings->base.duplex = DUPLEX_FULL;
+	link_ksettings->base.port = PORT_OTHER;
+
+	link_ksettings->base.autoneg = AUTONEG_DISABLE;
+
+	link_ksettings->base.speed = speed;
+
+	return 0;
+}
+
 const struct ethtool_ops mlx5i_ethtool_ops = {
-	.get_drvinfo       = mlx5i_get_drvinfo,
-	.get_strings       = mlx5i_get_strings,
-	.get_sset_count    = mlx5i_get_sset_count,
-	.get_ethtool_stats = mlx5i_get_ethtool_stats,
-	.get_ringparam     = mlx5i_get_ringparam,
-	.set_ringparam     = mlx5i_set_ringparam,
-	.flash_device      = mlx5i_flash_device,
-	.get_channels      = mlx5i_get_channels,
-	.set_channels      = mlx5i_set_channels,
-	.get_coalesce      = mlx5i_get_coalesce,
-	.set_coalesce      = mlx5i_set_coalesce,
-	.get_ts_info       = mlx5i_get_ts_info,
+	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
+				     ETHTOOL_COALESCE_MAX_FRAMES |
+				     ETHTOOL_COALESCE_USE_ADAPTIVE,
+	.get_drvinfo        = mlx5i_get_drvinfo,
+	.get_strings        = mlx5i_get_strings,
+	.get_sset_count     = mlx5i_get_sset_count,
+	.get_ethtool_stats  = mlx5i_get_ethtool_stats,
+	.get_ringparam      = mlx5i_get_ringparam,
+	.set_ringparam      = mlx5i_set_ringparam,
+	.flash_device       = mlx5i_flash_device,
+	.get_channels       = mlx5i_get_channels,
+	.set_channels       = mlx5i_set_channels,
+	.get_coalesce       = mlx5i_get_coalesce,
+	.set_coalesce       = mlx5i_set_coalesce,
+	.get_ts_info        = mlx5i_get_ts_info,
+	.get_link_ksettings = mlx5i_get_link_ksettings,
+	.get_link           = ethtool_op_get_link,
+};
+
+const struct ethtool_ops mlx5i_pkey_ethtool_ops = {
+	.get_drvinfo        = mlx5i_get_drvinfo,
+	.get_link           = ethtool_op_get_link,
+	.get_ts_info        = mlx5i_get_ts_info,
 };

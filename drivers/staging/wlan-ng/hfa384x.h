@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: (GPL-2.0 OR MPL-1.1) */
 /* hfa384x.h
  *
  * Defines the constants and data structures for the hfa384x
@@ -354,7 +355,7 @@
 /* Commonly used basic types */
 struct hfa384x_bytestr {
 	__le16 len;
-	u8 data[0];
+	u8 data[];
 } __packed;
 
 struct hfa384x_bytestr32 {
@@ -413,14 +414,14 @@ struct hfa384x_join_request_data {
 /*-- Configuration Record: authenticateStation (data portion only) --*/
 struct hfa384x_authenticate_station_data {
 	u8 address[ETH_ALEN];
-	u16 status;
-	u16 algorithm;
+	__le16 status;
+	__le16 algorithm;
 } __packed;
 
 /*-- Configuration Record: WPAData       (data portion only) --*/
 struct hfa384x_wpa_data {
 	__le16 datalen;
-	u8 data[0];		/* max 80 */
+	u8 data[];		/* max 80 */
 } __packed;
 
 /*--------------------------------------------------------------------
@@ -445,9 +446,9 @@ struct hfa384x_downloadbuffer {
 
 /*-- Information Record: commsquality --*/
 struct hfa384x_commsquality {
-	u16 cq_curr_bss;
-	u16 asl_curr_bss;
-	u16 anl_curr_fc;
+	__le16 cq_curr_bss;
+	__le16 asl_curr_bss;
+	__le16 anl_curr_fc;
 } __packed;
 
 /*-- Information Record: dmbcommsquality --*/
@@ -598,51 +599,51 @@ struct hfa384x_rx_frame {
 
 /*--  Inquiry Frame, Diagnose: Communication Tallies --*/
 struct hfa384x_comm_tallies_16 {
-	u16 txunicastframes;
-	u16 txmulticastframes;
-	u16 txfragments;
-	u16 txunicastoctets;
-	u16 txmulticastoctets;
-	u16 txdeferredtrans;
-	u16 txsingleretryframes;
-	u16 txmultipleretryframes;
-	u16 txretrylimitexceeded;
-	u16 txdiscards;
-	u16 rxunicastframes;
-	u16 rxmulticastframes;
-	u16 rxfragments;
-	u16 rxunicastoctets;
-	u16 rxmulticastoctets;
-	u16 rxfcserrors;
-	u16 rxdiscardsnobuffer;
-	u16 txdiscardswrongsa;
-	u16 rxdiscardswepundecr;
-	u16 rxmsginmsgfrag;
-	u16 rxmsginbadmsgfrag;
+	__le16 txunicastframes;
+	__le16 txmulticastframes;
+	__le16 txfragments;
+	__le16 txunicastoctets;
+	__le16 txmulticastoctets;
+	__le16 txdeferredtrans;
+	__le16 txsingleretryframes;
+	__le16 txmultipleretryframes;
+	__le16 txretrylimitexceeded;
+	__le16 txdiscards;
+	__le16 rxunicastframes;
+	__le16 rxmulticastframes;
+	__le16 rxfragments;
+	__le16 rxunicastoctets;
+	__le16 rxmulticastoctets;
+	__le16 rxfcserrors;
+	__le16 rxdiscardsnobuffer;
+	__le16 txdiscardswrongsa;
+	__le16 rxdiscardswepundecr;
+	__le16 rxmsginmsgfrag;
+	__le16 rxmsginbadmsgfrag;
 } __packed;
 
 struct hfa384x_comm_tallies_32 {
-	u32 txunicastframes;
-	u32 txmulticastframes;
-	u32 txfragments;
-	u32 txunicastoctets;
-	u32 txmulticastoctets;
-	u32 txdeferredtrans;
-	u32 txsingleretryframes;
-	u32 txmultipleretryframes;
-	u32 txretrylimitexceeded;
-	u32 txdiscards;
-	u32 rxunicastframes;
-	u32 rxmulticastframes;
-	u32 rxfragments;
-	u32 rxunicastoctets;
-	u32 rxmulticastoctets;
-	u32 rxfcserrors;
-	u32 rxdiscardsnobuffer;
-	u32 txdiscardswrongsa;
-	u32 rxdiscardswepundecr;
-	u32 rxmsginmsgfrag;
-	u32 rxmsginbadmsgfrag;
+	__le32 txunicastframes;
+	__le32 txmulticastframes;
+	__le32 txfragments;
+	__le32 txunicastoctets;
+	__le32 txmulticastoctets;
+	__le32 txdeferredtrans;
+	__le32 txsingleretryframes;
+	__le32 txmultipleretryframes;
+	__le32 txretrylimitexceeded;
+	__le32 txdiscards;
+	__le32 rxunicastframes;
+	__le32 rxmulticastframes;
+	__le32 rxfragments;
+	__le32 rxunicastoctets;
+	__le32 rxmulticastoctets;
+	__le32 rxfcserrors;
+	__le32 rxdiscardsnobuffer;
+	__le32 txdiscardswrongsa;
+	__le32 rxdiscardswepundecr;
+	__le32 rxmsginmsgfrag;
+	__le32 rxmsginbadmsgfrag;
 } __packed;
 
 /*--  Inquiry Frame, Diagnose: Scan Results & Subfields--*/
@@ -711,7 +712,7 @@ struct hfa384x_hscan_result {
 #define HFA384x_LINK_ASSOCFAIL		((u16)6)
 
 struct hfa384x_link_status {
-	u16 linkstatus;
+	__le16 linkstatus;
 } __packed;
 
 /*--  Unsolicited Frame, MAC Mgmt: AssociationStatus (--*/
@@ -733,13 +734,13 @@ struct hfa384x_assoc_status {
 
 struct hfa384x_auth_request {
 	u8 sta_addr[ETH_ALEN];
-	u16 algorithm;
+	__le16 algorithm;
 } __packed;
 
 /*--  Unsolicited Frame, MAC Mgmt: PSUserCount (AP Only) --*/
 
 struct hfa384x_ps_user_count {
-	u16 usercnt;
+	__le16 usercnt;
 } __packed;
 
 struct hfa384x_key_id_changed {
@@ -1175,13 +1176,11 @@ struct hfa384x_usbctlx {
 	enum ctlx_state state;	/* Tracks running state */
 
 	struct completion done;
-	volatile int reapable;	/* Food for the reaper task */
+	int reapable;		/* Food for the reaper task */
 
 	ctlx_cmdcb_t cmdcb;	/* Async command callback */
 	ctlx_usercb_t usercb;	/* Async user callback, */
 	void *usercb_data;	/*  at CTLX completion  */
-
-	int variant;		/* Identifies cmd variant */
 };
 
 struct hfa384x_usbctlxq {
@@ -1336,7 +1335,9 @@ struct hfa384x {
 						  * interface
 						  */
 
-	struct hfa384x_caplevel cap_act_sta_mfi; /* sta f/w to modem interface */
+	struct hfa384x_caplevel cap_act_sta_mfi; /*
+						  * sta f/w to modem interface
+						  */
 
 	struct hfa384x_caplevel cap_act_ap_cfi;	/*
 						 * ap f/w to controller
@@ -1358,7 +1359,9 @@ struct hfa384x {
 
 	struct hfa384x_inf_frame *scanresults;
 
-	struct prism2sta_authlist authlist;	/* Authenticated station list. */
+	struct prism2sta_authlist authlist;	/*
+						 * Authenticated station list.
+						 */
 	unsigned int accessmode;		/* Access mode. */
 	struct prism2sta_accesslist allow;	/* Allowed station list. */
 	struct prism2sta_accesslist deny;	/* Denied station list. */
@@ -1368,13 +1371,14 @@ struct hfa384x {
 void hfa384x_create(struct hfa384x *hw, struct usb_device *usb);
 void hfa384x_destroy(struct hfa384x *hw);
 
-int
-hfa384x_corereset(struct hfa384x *hw, int holdtime, int settletime, int genesis);
+int hfa384x_corereset(struct hfa384x *hw, int holdtime, int settletime,
+		      int genesis);
 int hfa384x_drvr_disable(struct hfa384x *hw, u16 macport);
 int hfa384x_drvr_enable(struct hfa384x *hw, u16 macport);
 int hfa384x_drvr_flashdl_enable(struct hfa384x *hw);
 int hfa384x_drvr_flashdl_disable(struct hfa384x *hw);
-int hfa384x_drvr_flashdl_write(struct hfa384x *hw, u32 daddr, void *buf, u32 len);
+int hfa384x_drvr_flashdl_write(struct hfa384x *hw, u32 daddr, void *buf,
+			       u32 len);
 int hfa384x_drvr_getconfig(struct hfa384x *hw, u16 rid, void *buf, u16 len);
 int hfa384x_drvr_ramdl_enable(struct hfa384x *hw, u32 exeaddr);
 int hfa384x_drvr_ramdl_disable(struct hfa384x *hw);
@@ -1382,7 +1386,8 @@ int hfa384x_drvr_ramdl_write(struct hfa384x *hw, u32 daddr, void *buf, u32 len);
 int hfa384x_drvr_readpda(struct hfa384x *hw, void *buf, unsigned int len);
 int hfa384x_drvr_setconfig(struct hfa384x *hw, u16 rid, void *buf, u16 len);
 
-static inline int hfa384x_drvr_getconfig16(struct hfa384x *hw, u16 rid, void *val)
+static inline int
+hfa384x_drvr_getconfig16(struct hfa384x *hw, u16 rid, void *val)
 {
 	int result = 0;
 

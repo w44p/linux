@@ -1,15 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Copyright (c) 2004 Evgeniy Polyakov <zbr@ioremap.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #ifndef __LINUX_W1_H
@@ -68,6 +59,7 @@ struct w1_reg_num {
  * @family: module for device family type
  * @family_data: pointer for use by the family module
  * @dev: kernel device identifier
+ * @hwmon: pointer to hwmon device
  *
  */
 struct w1_slave {
@@ -83,6 +75,7 @@ struct w1_slave {
 	struct w1_family	*family;
 	void			*family_data;
 	struct device		dev;
+	struct device		*hwmon;
 };
 
 typedef void (*w1_slave_found_callback)(struct w1_master *, u64);
@@ -125,6 +118,9 @@ typedef void (*w1_slave_found_callback)(struct w1_master *, u64);
  * w1_master* is passed to the slave found callback.
  * u8 is search_type, W1_SEARCH or W1_ALARM_SEARCH
  *
+ * @dev_id: Optional device id string, which w1 slaves could use for
+ * creating names, which then give a connection to the w1 master
+ *
  * Note: read_bit and write_bit are very low level functions and should only
  * be used with hardware that doesn't really support 1-wire operations,
  * like a parallel/serial port.
@@ -157,6 +153,8 @@ struct w1_bus_master {
 
 	void		(*search)(void *, struct w1_master *,
 		u8, w1_slave_found_callback);
+
+	char		*dev_id;
 };
 
 /**
@@ -250,11 +248,13 @@ void w1_remove_master_device(struct w1_bus_master *master);
  * @add_slave: add_slave
  * @remove_slave: remove_slave
  * @groups: sysfs group
+ * @chip_info: pointer to struct hwmon_chip_info
  */
 struct w1_family_ops {
 	int  (*add_slave)(struct w1_slave *sl);
 	void (*remove_slave)(struct w1_slave *sl);
 	const struct attribute_group **groups;
+	const struct hwmon_chip_info *chip_info;
 };
 
 /**
@@ -262,13 +262,16 @@ struct w1_family_ops {
  * @family_entry:	family linked list
  * @fid:		8 bit family identifier
  * @fops:		operations for this family
+ * @of_match_table: open firmware match table
  * @refcnt:		reference counter
  */
 struct w1_family {
 	struct list_head	family_entry;
 	u8			fid;
 
-	struct w1_family_ops	*fops;
+	const struct w1_family_ops *fops;
+
+	const struct of_device_id *of_match_table;
 
 	atomic_t		refcnt;
 };
@@ -289,6 +292,7 @@ void w1_unregister_family(struct w1_family *family);
 			w1_unregister_family)
 
 u8 w1_triplet(struct w1_master *dev, int bdir);
+u8 w1_touch_bit(struct w1_master *dev, int bit);
 void w1_write_8(struct w1_master *, u8);
 u8 w1_read_8(struct w1_master *);
 int w1_reset_bus(struct w1_master *);

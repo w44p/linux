@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 addnote
 decompress_inflate.c
 empty.c
@@ -18,7 +19,6 @@ otheros.bld
 uImage
 cuImage.*
 dtbImage.*
-*.dtb
 treeImage.*
 vmlinux.strip
 zImage
@@ -45,4 +45,3 @@ fdt_sw.c
 fdt_wip.c
 libfdt.h
 libfdt_internal.h
-

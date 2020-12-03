@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (C) 2012 IBM Corporation
+ * Copyright (C) 2012-2020 IBM Corporation
  *
  * Author: Ashley Lai <ashleydlai@gmail.com>
  *
@@ -7,12 +8,6 @@
  *
  * Device driver for TCG/TCPA TPM (trusted platform module).
  * Specifications at www.trustedcomputinggroup.org
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2 of the
- * License.
- *
  */
 
 #include <linux/dma-mapping.h>
@@ -32,26 +27,69 @@
 
 static const char tpm_ibmvtpm_driver_name[] = "tpm_ibmvtpm";
 
-static struct vio_device_id tpm_ibmvtpm_device_table[] = {
+static const struct vio_device_id tpm_ibmvtpm_device_table[] = {
 	{ "IBM,vtpm", "IBM,vtpm"},
+	{ "IBM,vtpm", "IBM,vtpm20"},
 	{ "", "" }
 };
 MODULE_DEVICE_TABLE(vio, tpm_ibmvtpm_device_table);
 
 /**
- * ibmvtpm_send_crq - Send a CRQ request
- *
+ * ibmvtpm_send_crq_word() - Send a CRQ request
  * @vdev:	vio device struct
- * @w1:		first word
- * @w2:		second word
+ * @w1:		pre-constructed first word of tpm crq (second word is reserved)
  *
  * Return:
- *	0 -Sucess
+ *	0 - Success
  *	Non-zero - Failure
  */
-static int ibmvtpm_send_crq(struct vio_dev *vdev, u64 w1, u64 w2)
+static int ibmvtpm_send_crq_word(struct vio_dev *vdev, u64 w1)
 {
-	return plpar_hcall_norets(H_SEND_CRQ, vdev->unit_address, w1, w2);
+	return plpar_hcall_norets(H_SEND_CRQ, vdev->unit_address, w1, 0);
+}
+
+/**
+ * ibmvtpm_send_crq() - Send a CRQ request
+ *
+ * @vdev:	vio device struct
+ * @valid:	Valid field
+ * @msg:	Type field
+ * @len:	Length field
+ * @data:	Data field
+ *
+ * The ibmvtpm crq is defined as follows:
+ *
+ * Byte  |   0   |   1   |   2   |   3   |   4   |   5   |   6   |   7
+ * -----------------------------------------------------------------------
+ * Word0 | Valid | Type  |     Length    |              Data
+ * -----------------------------------------------------------------------
+ * Word1 |                Reserved
+ * -----------------------------------------------------------------------
+ *
+ * Which matches the following structure (on bigendian host):
+ *
+ * struct ibmvtpm_crq {
+ *         u8 valid;
+ *         u8 msg;
+ *         __be16 len;
+ *         __be32 data;
+ *         __be64 reserved;
+ * } __attribute__((packed, aligned(8)));
+ *
+ * However, the value is passed in a register so just compute the numeric value
+ * to load into the register avoiding byteswap altogether. Endian only affects
+ * memory loads and stores - registers are internally represented the same.
+ *
+ * Return:
+ *	0 (H_SUCCESS) - Success
+ *	Non-zero - Failure
+ */
+static int ibmvtpm_send_crq(struct vio_dev *vdev,
+		u8 valid, u8 msg, u16 len, u32 data)
+{
+	u64 w1 = ((u64)valid << 56) | ((u64)msg << 48) | ((u64)len << 32) |
+		(u64)data;
+	return ibmvtpm_send_crq_word(vdev, w1);
 }
 
 /**
@@ -97,20 +135,77 @@ static int tpm_ibmvtpm_recv(struct tpm_chip *chip, u8 *buf, size_t count)
 }
 
 /**
- * tpm_ibmvtpm_send - Send tpm request
+ * ibmvtpm_crq_send_init - Send a CRQ initialize message
+ * @ibmvtpm:	vtpm device struct
  *
+ * Return:
+ *	0 on success.
+ *	Non-zero on failure.
+ */
+static int ibmvtpm_crq_send_init(struct ibmvtpm_dev *ibmvtpm)
+{
+	int rc;
+
+	rc = ibmvtpm_send_crq_word(ibmvtpm->vdev, INIT_CRQ_CMD);
+	if (rc != H_SUCCESS)
+		dev_err(ibmvtpm->dev,
+			"%s failed rc=%d\n", __func__, rc);
+
+	return rc;
+}
+
+/**
+ * tpm_ibmvtpm_resume - Resume from suspend
+ *
+ * @dev:	device struct
+ *
+ * Return: Always 0.
+ */
+static int tpm_ibmvtpm_resume(struct device *dev)
+{
+	struct tpm_chip *chip = dev_get_drvdata(dev);
+	struct ibmvtpm_dev *ibmvtpm = dev_get_drvdata(&chip->dev);
+	int rc = 0;
+
+	do {
+		if (rc)
+			msleep(100);
+		rc = plpar_hcall_norets(H_ENABLE_CRQ,
+					ibmvtpm->vdev->unit_address);
+	} while (rc == H_IN_PROGRESS || rc == H_BUSY || H_IS_LONG_BUSY(rc));
+
+	if (rc) {
+		dev_err(dev, "Error enabling ibmvtpm rc=%d\n", rc);
+		return rc;
+	}
+
+	rc = vio_enable_interrupts(ibmvtpm->vdev);
+	if (rc) {
+		dev_err(dev, "Error vio_enable_interrupts rc=%d\n", rc);
+		return rc;
+	}
+
+	rc = ibmvtpm_crq_send_init(ibmvtpm);
+	if (rc)
+		dev_err(dev, "Error send_init rc=%d\n", rc);
+
+	return rc;
+}
+
+/**
+ * tpm_ibmvtpm_send() - Send a TPM command
  * @chip:	tpm chip struct
  * @buf:	buffer contains data to send
  * @count:	size of buffer
  *
  * Return:
- *	Number of bytes sent or < 0 on error.
+ *   0 on success,
+ *   -errno on error
  */
 static int tpm_ibmvtpm_send(struct tpm_chip *chip, u8 *buf, size_t count)
 {
 	struct ibmvtpm_dev *ibmvtpm = dev_get_drvdata(&chip->dev);
-	struct ibmvtpm_crq crq;
-	__be64 *word = (__be64 *)&crq;
+	bool retry = true;
 	int rc, sig;
 
 	if (!ibmvtpm->rtce_buf) {
@@ -137,10 +232,6 @@ static int tpm_ibmvtpm_send(struct tpm_chip *chip, u8 *buf, size_t count)
 	spin_lock(&ibmvtpm->rtce_lock);
 	ibmvtpm->res_len = 0;
 	memcpy((void *)ibmvtpm->rtce_buf, (void *)buf, count);
-	crq.valid = (u8)IBMVTPM_VALID_CMD;
-	crq.msg = (u8)VTPM_TPM_COMMAND;
-	crq.len = cpu_to_be16(count);
-	crq.data = cpu_to_be32(ibmvtpm->rtce_dma_handle);
 
 	/*
 	 * set the processing flag before the Hcall, since we may get the
@@ -148,17 +239,27 @@ static int tpm_ibmvtpm_send(struct tpm_chip *chip, u8 *buf, size_t count)
 	 */
 	ibmvtpm->tpm_processing_cmd = true;
 
-	rc = ibmvtpm_send_crq(ibmvtpm->vdev, be64_to_cpu(word[0]),
-			      be64_to_cpu(word[1]));
+again:
+	rc = ibmvtpm_send_crq(ibmvtpm->vdev,
+			IBMVTPM_VALID_CMD, VTPM_TPM_COMMAND,
+			count, ibmvtpm->rtce_dma_handle);
 	if (rc != H_SUCCESS) {
+		/*
+		 * H_CLOSED can be returned after LPM resume.  Call
+		 * tpm_ibmvtpm_resume() to re-enable the CRQ then retry
+		 * ibmvtpm_send_crq() once before failing.
+		 */
+		if (rc == H_CLOSED && retry) {
+			tpm_ibmvtpm_resume(ibmvtpm->dev);
+			retry = false;
+			goto again;
+		}
 		dev_err(ibmvtpm->dev, "tpm_ibmvtpm_send failed rc=%d\n", rc);
-		rc = 0;
 		ibmvtpm->tpm_processing_cmd = false;
-	} else
-		rc = count;
+	}
 
 	spin_unlock(&ibmvtpm->rtce_lock);
-	return rc;
+	return 0;
 }
 
 static void tpm_ibmvtpm_cancel(struct tpm_chip *chip)
@@ -182,15 +283,10 @@ static u8 tpm_ibmvtpm_status(struct tpm_chip *chip)
  */
 static int ibmvtpm_crq_get_rtce_size(struct ibmvtpm_dev *ibmvtpm)
 {
-	struct ibmvtpm_crq crq;
-	u64 *buf = (u64 *) &crq;
 	int rc;
 
-	crq.valid = (u8)IBMVTPM_VALID_CMD;
-	crq.msg = (u8)VTPM_GET_RTCE_BUFFER_SIZE;
-
-	rc = ibmvtpm_send_crq(ibmvtpm->vdev, cpu_to_be64(buf[0]),
-			      cpu_to_be64(buf[1]));
+	rc = ibmvtpm_send_crq(ibmvtpm->vdev,
+			IBMVTPM_VALID_CMD, VTPM_GET_RTCE_BUFFER_SIZE, 0, 0);
 	if (rc != H_SUCCESS)
 		dev_err(ibmvtpm->dev,
 			"ibmvtpm_crq_get_rtce_size failed rc=%d\n", rc);
@@ -210,15 +306,10 @@ static int ibmvtpm_crq_get_rtce_size(struct ibmvtpm_dev *ibmvtpm)
  */
 static int ibmvtpm_crq_get_version(struct ibmvtpm_dev *ibmvtpm)
 {
-	struct ibmvtpm_crq crq;
-	u64 *buf = (u64 *) &crq;
 	int rc;
 
-	crq.valid = (u8)IBMVTPM_VALID_CMD;
-	crq.msg = (u8)VTPM_GET_VERSION;
-
-	rc = ibmvtpm_send_crq(ibmvtpm->vdev, cpu_to_be64(buf[0]),
-			      cpu_to_be64(buf[1]));
+	rc = ibmvtpm_send_crq(ibmvtpm->vdev,
+			IBMVTPM_VALID_CMD, VTPM_GET_VERSION, 0, 0);
 	if (rc != H_SUCCESS)
 		dev_err(ibmvtpm->dev,
 			"ibmvtpm_crq_get_version failed rc=%d\n", rc);
@@ -238,30 +329,10 @@ static int ibmvtpm_crq_send_init_complete(struct ibmvtpm_dev *ibmvtpm)
 {
 	int rc;
 
-	rc = ibmvtpm_send_crq(ibmvtpm->vdev, INIT_CRQ_COMP_CMD, 0);
+	rc = ibmvtpm_send_crq_word(ibmvtpm->vdev, INIT_CRQ_COMP_CMD);
 	if (rc != H_SUCCESS)
 		dev_err(ibmvtpm->dev,
 			"ibmvtpm_crq_send_init_complete failed rc=%d\n", rc);
-
-	return rc;
-}
-
-/**
- * ibmvtpm_crq_send_init - Send a CRQ initialize message
- * @ibmvtpm:	vtpm device struct
- *
- * Return:
- *	0 on success.
- *	Non-zero on failure.
- */
-static int ibmvtpm_crq_send_init(struct ibmvtpm_dev *ibmvtpm)
-{
-	int rc;
-
-	rc = ibmvtpm_send_crq(ibmvtpm->vdev, INIT_CRQ_CMD, 0);
-	if (rc != H_SUCCESS)
-		dev_err(ibmvtpm->dev,
-			"ibmvtpm_crq_send_init failed rc=%d\n", rc);
 
 	return rc;
 }
@@ -340,15 +411,10 @@ static int tpm_ibmvtpm_suspend(struct device *dev)
 {
 	struct tpm_chip *chip = dev_get_drvdata(dev);
 	struct ibmvtpm_dev *ibmvtpm = dev_get_drvdata(&chip->dev);
-	struct ibmvtpm_crq crq;
-	u64 *buf = (u64 *) &crq;
 	int rc = 0;
 
-	crq.valid = (u8)IBMVTPM_VALID_CMD;
-	crq.msg = (u8)VTPM_PREPARE_TO_SUSPEND;
-
-	rc = ibmvtpm_send_crq(ibmvtpm->vdev, cpu_to_be64(buf[0]),
-			      cpu_to_be64(buf[1]));
+	rc = ibmvtpm_send_crq(ibmvtpm->vdev,
+			IBMVTPM_VALID_CMD, VTPM_PREPARE_TO_SUSPEND, 0, 0);
 	if (rc != H_SUCCESS)
 		dev_err(ibmvtpm->dev,
 			"tpm_ibmvtpm_suspend failed rc=%d\n", rc);
@@ -381,44 +447,6 @@ static int ibmvtpm_reset_crq(struct ibmvtpm_dev *ibmvtpm)
 
 	return plpar_hcall_norets(H_REG_CRQ, ibmvtpm->vdev->unit_address,
 				  ibmvtpm->crq_dma_handle, CRQ_RES_BUF_SIZE);
-}
-
-/**
- * tpm_ibmvtpm_resume - Resume from suspend
- *
- * @dev:	device struct
- *
- * Return: Always 0.
- */
-static int tpm_ibmvtpm_resume(struct device *dev)
-{
-	struct tpm_chip *chip = dev_get_drvdata(dev);
-	struct ibmvtpm_dev *ibmvtpm = dev_get_drvdata(&chip->dev);
-	int rc = 0;
-
-	do {
-		if (rc)
-			msleep(100);
-		rc = plpar_hcall_norets(H_ENABLE_CRQ,
-					ibmvtpm->vdev->unit_address);
-	} while (rc == H_IN_PROGRESS || rc == H_BUSY || H_IS_LONG_BUSY(rc));
-
-	if (rc) {
-		dev_err(dev, "Error enabling ibmvtpm rc=%d\n", rc);
-		return rc;
-	}
-
-	rc = vio_enable_interrupts(ibmvtpm->vdev);
-	if (rc) {
-		dev_err(dev, "Error vio_enable_interrupts rc=%d\n", rc);
-		return rc;
-	}
-
-	rc = ibmvtpm_crq_send_init(ibmvtpm);
-	if (rc)
-		dev_err(dev, "Error send_init rc=%d\n", rc);
-
-	return rc;
 }
 
 static bool tpm_ibmvtpm_req_canceled(struct tpm_chip *chip, u8 status)
@@ -554,6 +582,7 @@ static irqreturn_t ibmvtpm_interrupt(int irq, void *vtpm_instance)
 	 */
 	while ((crq = ibmvtpm_crq_get_next(ibmvtpm)) != NULL) {
 		ibmvtpm_crq_process(crq, ibmvtpm);
+		wake_up_interruptible(&ibmvtpm->crq_queue.wq);
 		crq->valid = 0;
 		smp_wmb();
 	}
@@ -601,6 +630,7 @@ static int tpm_ibmvtpm_probe(struct vio_dev *vio_dev,
 	}
 
 	crq_q->num_entry = CRQ_RES_BUF_SIZE / sizeof(*crq_q->crq_addr);
+	init_waitqueue_head(&crq_q->wq);
 	ibmvtpm->crq_dma_handle = dma_map_single(dev, crq_q->crq_addr,
 						 CRQ_RES_BUF_SIZE,
 						 DMA_BIDIRECTIONAL);
@@ -652,6 +682,20 @@ static int tpm_ibmvtpm_probe(struct vio_dev *vio_dev,
 	rc = ibmvtpm_crq_get_rtce_size(ibmvtpm);
 	if (rc)
 		goto init_irq_cleanup;
+
+	if (!wait_event_timeout(ibmvtpm->crq_queue.wq,
+				ibmvtpm->rtce_buf != NULL,
+				HZ)) {
+		dev_err(dev, "CRQ response timed out\n");
+		goto init_irq_cleanup;
+	}
+
+	if (!strcmp(id->compat, "IBM,vtpm20")) {
+		chip->flags |= TPM_CHIP_FLAG_TPM2;
+		rc = tpm2_get_cc_attrs_tbl(chip);
+		if (rc)
+			goto init_irq_cleanup;
+	}
 
 	return tpm_chip_register(chip);
 init_irq_cleanup:

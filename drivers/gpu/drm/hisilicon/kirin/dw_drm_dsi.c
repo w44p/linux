@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * DesignWare MIPI DSI Host Controller v1.02 driver
  *
@@ -8,21 +9,22 @@
  *	Xinliang Liu <z.liuxinliang@hisilicon.com>
  *	Xinliang Liu <xinliang.liu@linaro.org>
  *	Xinwei Kong <kong.kongxinwei@hisilicon.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #include <linux/clk.h>
 #include <linux/component.h>
+#include <linux/delay.h>
+#include <linux/module.h>
+#include <linux/platform_device.h>
 
-#include <drm/drm_of.h>
-#include <drm/drm_crtc_helper.h>
-#include <drm/drm_mipi_dsi.h>
-#include <drm/drm_encoder_slave.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_bridge.h>
+#include <drm/drm_device.h>
+#include <drm/drm_mipi_dsi.h>
+#include <drm/drm_of.h>
+#include <drm/drm_print.h>
+#include <drm/drm_probe_helper.h>
+#include <drm/drm_simple_kms_helper.h>
 
 #include "dw_dsi_reg.h"
 
@@ -603,6 +605,72 @@ static void dsi_encoder_enable(struct drm_encoder *encoder)
 	dsi->enable = true;
 }
 
+static enum drm_mode_status dsi_encoder_phy_mode_valid(
+					struct drm_encoder *encoder,
+					const struct drm_display_mode *mode)
+{
+	struct dw_dsi *dsi = encoder_to_dsi(encoder);
+	struct mipi_phy_params phy;
+	u32 bpp = mipi_dsi_pixel_format_to_bpp(dsi->format);
+	u32 req_kHz, act_kHz, lane_byte_clk_kHz;
+
+	/* Calculate the lane byte clk using the adjusted mode clk */
+	memset(&phy, 0, sizeof(phy));
+	req_kHz = mode->clock * bpp / dsi->lanes;
+	act_kHz = dsi_calc_phy_rate(req_kHz, &phy);
+	lane_byte_clk_kHz = act_kHz / 8;
+
+	DRM_DEBUG_DRIVER("Checking mode %ix%i-%i@%i clock: %i...",
+			mode->hdisplay, mode->vdisplay, bpp,
+			drm_mode_vrefresh(mode), mode->clock);
+
+	/*
+	 * Make sure the adjusted mode clock and the lane byte clk
+	 * have a common denominator base frequency
+	 */
+	if (mode->clock/dsi->lanes == lane_byte_clk_kHz/3) {
+		DRM_DEBUG_DRIVER("OK!\n");
+		return MODE_OK;
+	}
+
+	DRM_DEBUG_DRIVER("BAD!\n");
+	return MODE_BAD;
+}
+
+static enum drm_mode_status dsi_encoder_mode_valid(struct drm_encoder *encoder,
+					const struct drm_display_mode *mode)
+
+{
+	const struct drm_crtc_helper_funcs *crtc_funcs = NULL;
+	struct drm_crtc *crtc = NULL;
+	struct drm_display_mode adj_mode;
+	enum drm_mode_status ret;
+
+	/*
+	 * The crtc might adjust the mode, so go through the
+	 * possible crtcs (technically just one) and call
+	 * mode_fixup to figure out the adjusted mode before we
+	 * validate it.
+	 */
+	drm_for_each_crtc(crtc, encoder->dev) {
+		/*
+		 * reset adj_mode to the mode value each time,
+		 * so we don't adjust the mode twice
+		 */
+		drm_mode_copy(&adj_mode, mode);
+
+		crtc_funcs = crtc->helper_private;
+		if (crtc_funcs && crtc_funcs->mode_fixup)
+			if (!crtc_funcs->mode_fixup(crtc, mode, &adj_mode))
+				return MODE_BAD;
+
+		ret = dsi_encoder_phy_mode_valid(encoder, &adj_mode);
+		if (ret != MODE_OK)
+			return ret;
+	}
+	return MODE_OK;
+}
+
 static void dsi_encoder_mode_set(struct drm_encoder *encoder,
 				 struct drm_display_mode *mode,
 				 struct drm_display_mode *adj_mode)
@@ -622,13 +690,10 @@ static int dsi_encoder_atomic_check(struct drm_encoder *encoder,
 
 static const struct drm_encoder_helper_funcs dw_encoder_helper_funcs = {
 	.atomic_check	= dsi_encoder_atomic_check,
+	.mode_valid	= dsi_encoder_mode_valid,
 	.mode_set	= dsi_encoder_mode_set,
 	.enable		= dsi_encoder_enable,
 	.disable	= dsi_encoder_disable
-};
-
-static const struct drm_encoder_funcs dw_encoder_funcs = {
-	.destroy = drm_encoder_cleanup,
 };
 
 static int dw_drm_encoder_init(struct device *dev,
@@ -644,8 +709,7 @@ static int dw_drm_encoder_init(struct device *dev,
 	}
 
 	encoder->possible_crtcs = crtc_mask;
-	ret = drm_encoder_init(drm_dev, encoder, &dw_encoder_funcs,
-			       DRM_MODE_ENCODER_DSI, NULL);
+	ret = drm_simple_encoder_init(drm_dev, encoder, DRM_MODE_ENCODER_DSI);
 	if (ret) {
 		DRM_ERROR("failed to init dsi encoder\n");
 		return ret;
@@ -708,7 +772,7 @@ static int dsi_bridge_init(struct drm_device *dev, struct dw_dsi *dsi)
 	int ret;
 
 	/* associate the bridge to dsi encoder */
-	ret = drm_bridge_attach(encoder, bridge, NULL);
+	ret = drm_bridge_attach(encoder, bridge, NULL, 0);
 	if (ret) {
 		DRM_ERROR("failed to attach external bridge\n");
 		return ret;
